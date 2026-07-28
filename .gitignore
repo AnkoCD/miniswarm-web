@@ -1,0 +1,34 @@
+.env
+.env.*
+!.env.example
+.venv/
+__pycache__/
+.pytest_cache/
+.mypy_cache/
+*.py[cod]
+*.db
+*.sqlite3
+backend/.coverage
+node_modules/
+dist/
+data/
+logs/
+.idea/
+.vscode/
+.deployment/
+.agents/
+.codex/
+.tmp/
+aaa/
+deliverables/
+*.tar.gz
+*.7z
+*.pem
+*.key
+*.pfx
+*.p12
+
+# Third-party runtime Skills are installed from their pinned upstream sources.
+# Some use proprietary licenses and must not be redistributed in this repository.
+skills/*
+!skills/README.md

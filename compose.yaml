@@ -1,0 +1,189 @@
+name: miniswarm
+
+services:
+  frontend:
+    build:
+      context: ./frontend
+    restart: unless-stopped
+    ports:
+      - "${FRONTEND_BIND_ADDRESS:-127.0.0.1}:${FRONTEND_PORT:-8080}:80"
+    depends_on:
+      api:
+        condition: service_healthy
+    networks: [public_net]
+
+  api:
+    image: miniswarm-backend:latest
+    build:
+      context: ./backend
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    env_file: .env
+    restart: unless-stopped
+    volumes:
+      - task_data:/data
+      - ./skills:/skills:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      skill-manager:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+    networks: [public_net, backend_net]
+
+  worker-control:
+    image: miniswarm-backend:latest
+    command: ["celery", "-A", "app.worker.celery_app:celery_app", "worker", "-Q", "control", "--concurrency=1", "--loglevel=INFO"]
+    env_file: .env
+    restart: unless-stopped
+    volumes:
+      - task_data:/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks: [backend_net, egress_net]
+
+  worker-agent:
+    image: miniswarm-backend:latest
+    command: ["celery", "-A", "app.worker.celery_app:celery_app", "worker", "-Q", "agent", "--concurrency=${MAX_GLOBAL_AGENTS:-12}", "--loglevel=INFO"]
+    env_file: .env
+    restart: unless-stopped
+    volumes:
+      - task_data:/data
+      - ./skills:/skills:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      skill-manager:
+        condition: service_healthy
+    networks: [backend_net, egress_net]
+
+  worker-memory:
+    image: miniswarm-backend:latest
+    command: ["celery", "-A", "app.worker.celery_app:celery_app", "worker", "-Q", "memory", "--concurrency=1", "--loglevel=INFO"]
+    env_file: .env
+    restart: unless-stopped
+    volumes:
+      - task_data:/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks: [backend_net, egress_net]
+
+  runner:
+    build:
+      context: ./runner
+    init: true
+    restart: unless-stopped
+    environment:
+      HOME: /tmp
+      XDG_CACHE_HOME: /tmp/.cache
+      MPLCONFIGDIR: /tmp/matplotlib
+      SAL_USE_VCLPLUGIN: svp
+      RUNNER_DATA_ROOT: /data
+      RUNNER_SKILLS_ROOT: /skills
+      ANYSEARCH_API_KEY: ${ANYSEARCH_API_KEY:-}
+      RUNNER_SHARED_SECRET: ${RUNNER_SHARED_SECRET:?RUNNER_SHARED_SECRET is required}
+      RUNNER_MAX_TIMEOUT_SECONDS: 300
+      RUNNER_MAX_OUTPUT_BYTES: 65536
+      RUNNER_OFFICE_VISUAL_QA_REQUIRED: "true"
+      RUNNER_OFFICE_VISUAL_MAX_PAGES: 60
+      RUNNER_MAX_OFFICE_BYTES: 104857600
+    volumes:
+      - task_data:/data
+      - ./skills:/skills:ro
+    read_only: true
+    tmpfs:
+      - /tmp:size=512m,noexec,nosuid,nodev
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 256
+    mem_limit: 1536m
+    cpus: 1.5
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8100/health')"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+    networks: [backend_net, egress_net]
+
+  skill-manager:
+    build:
+      context: ./skill-manager
+    restart: unless-stopped
+    user: "0:0"
+    environment:
+      SKILL_MANAGER_SHARED_SECRET: ${SKILL_MANAGER_SHARED_SECRET:?SKILL_MANAGER_SHARED_SECRET is required}
+      SKILL_MANAGER_SKILLS_ROOT: /skills
+    volumes:
+      - ./skills:/skills
+    read_only: true
+    tmpfs:
+      - /tmp:size=256m,noexec,nosuid,nodev
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 96
+    mem_limit: 768m
+    cpus: 1.0
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8200/health')"]
+      interval: 15s
+      timeout: 5s
+      retries: 8
+    networks: [backend_net, egress_net]
+
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: miniswarm
+      POSTGRES_USER: miniswarm
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-me-before-production}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "127.0.0.1:${POSTGRES_LOCAL_PORT:-15432}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U miniswarm -d miniswarm"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks: [backend_net, db_proxy_net]
+
+  redis:
+    image: redis:8-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks: [backend_net]
+
+volumes:
+  postgres_data:
+  redis_data:
+  task_data:
+
+networks:
+  public_net:
+  backend_net:
+    internal: true
+  db_proxy_net:
+  egress_net:

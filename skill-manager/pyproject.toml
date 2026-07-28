@@ -1,0 +1,25 @@
+[build-system]
+requires = ["hatchling==1.31.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "miniswarm-skill-manager"
+version = "0.1.0"
+requires-python = ">=3.12,<3.15"
+dependencies = [
+  "fastapi==0.139.2",
+  "httpx==0.28.1",
+  "pydantic-settings==2.14.2",
+  "skillspector @ git+https://github.com/NVIDIA/skillspector.git@fd25398d7aa99353d86237b9c260759351f0e644",
+  "uvicorn==0.51.0",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["skill_manager"]
+
+[tool.hatch.metadata]
+allow-direct-references = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
