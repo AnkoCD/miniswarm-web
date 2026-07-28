@@ -75,7 +75,7 @@ class DeepSeekClient:
             "thinking": {"type": "enabled" if thinking else "disabled"},
         }
         if thinking:
-            payload["reasoning_effort"] = "high"
+            payload["reasoning_effort"] = "max"
         if response_format:
             payload["response_format"] = response_format
         if tools:
