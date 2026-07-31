@@ -16,16 +16,28 @@ from redis.exceptions import RedisError
 from app.core.config import get_settings
 from app.db import SessionLocal, get_db
 from app.dependencies import get_current_user
-from app.models import ApiUsage, Approval, ApprovalStatus, Artifact, MemoryExtraction, NodeStatus, ProjectFile, ProjectMember, ProjectRole, Task, TaskEvent, TaskMessage, TaskNode, TaskSource, TaskStatus, ToolCall, User
-from app.schemas import ApprovalDecision, ApprovalRead, ArchiveResponse, ArchiveTaskList, ArchiveTaskRead, ArtifactPreviewMetadata, ArtifactRead, EventList, MemoryExtractionRead, TaskCreate, TaskList, TaskMessageCreate, TaskMessageRead, TaskNodeRead, TaskRead, TaskSourceRead, ToolCallRead, UsageSummary
+from app.models import ApiUsage, Approval, ApprovalStatus, Artifact, MemoryExtraction, NodeStatus, ProjectFile, ProjectMember, ProjectRole, Task, TaskBriefVersion, TaskDirective, TaskEvent, TaskMessage, TaskNode, TaskSource, TaskStatus, ToolCall, User
+from app.schemas import ApprovalDecision, ApprovalRead, ArchiveResponse, ArchiveTaskList, ArchiveTaskRead, ArtifactPreviewMetadata, ArtifactRead, EventList, MemoryExtractionRead, TaskCreate, TaskList, TaskMessageCreate, TaskMessageRead, TaskNodeRead, TaskRead, TaskSourceRead, TaskSupervisionRead, ToolCallRead, UsageSummary
 from app.services import add_event, ensure_initial_message, global_active_task_count, user_active_task_count
 from app.storage import resolve_task_path, safe_filename, task_root
 from app.project_access import ensure_default_project, require_project, require_task
 from app.project_files import preview_kind, snapshot_project_files, validated_mime_type
 from app.sources import capture_user_urls
 from app.realtime import task_channel
-from app.worker.tasks import analyze_archive_memory_task, chat_reply_task, run_task
+from app.worker.tasks import analyze_archive_memory_task, chat_reply_task, run_task, supervise_message_task
 from app.agent.skill_registry import available_skill_names
+from app.agent.interaction_router import resolve_interaction_mode
+from app.agent.deepseek import resolve_task_model
+
+
+WEB_SEARCH_DIRECTIVE = "【联网检索】请使用可用的联网搜索工具核对最新信息，并在结论中保留可追溯来源。"
+
+
+def _with_web_search_directive(content: str) -> str:
+    cleaned = content.strip()
+    if cleaned.startswith(WEB_SEARCH_DIRECTIVE):
+        return cleaned
+    return f"{WEB_SEARCH_DIRECTIVE}\n\n{cleaned}"
 
 router = APIRouter(prefix="/tasks", tags=["tasks"])
 
@@ -246,21 +258,38 @@ def create_task(
         raise HTTPException(status_code=422, detail=f"Skill 未安装：{', '.join(unknown_skills)}")
     if payload.skill_mode == "manual" and not payload.selected_skills:
         raise HTTPException(status_code=422, detail="手动模式至少选择一个 Skill")
-    if payload.execution_kind != "chat":
+    route = (
+        resolve_interaction_mode(
+            payload.prompt,
+            payload.execution_kind,
+            model_mode=payload.model_mode,
+            settings=settings,
+        )
+        if payload.execution_kind == "auto"
+        else None
+    )
+    execution_kind = route.mode if route is not None else payload.execution_kind
+    if execution_kind != "chat":
         if user_active_task_count(db, user) >= settings.max_active_tasks_per_user:
             raise HTTPException(status_code=409, detail="每位用户同时只能运行一个主任务")
         if global_active_task_count(db) >= settings.max_active_tasks:
             raise HTTPException(status_code=409, detail="系统并发任务已满，请稍后再试")
-    title = payload.title or payload.prompt.strip().splitlines()[0][:80]
-    queued = payload.start_immediately and payload.execution_kind != "chat"
+    original_prompt = payload.prompt.strip()
+    title = payload.title or original_prompt.splitlines()[0][:80]
+    effective_prompt = (
+        _with_web_search_directive(original_prompt)
+        if payload.web_search and execution_kind != "chat"
+        else original_prompt
+    )
+    queued = payload.start_immediately and execution_kind != "chat"
     task = Task(
         owner_id=user.id,
         project_id=project.id,
         created_by=user.id,
-        execution_kind=payload.execution_kind,
+        execution_kind=execution_kind,
         client_request_id=payload.client_request_id,
         title=title,
-        prompt=payload.prompt,
+        prompt=effective_prompt,
         task_type=payload.task_type,
         execution_mode=payload.execution_mode,
         autonomy_mode=payload.autonomy_mode,
@@ -276,14 +305,26 @@ def create_task(
             task_id=task.id,
             revision=0,
             role="user",
-            mode="chat" if payload.execution_kind == "chat" else "task",
-            content=payload.prompt,
+            mode="chat" if execution_kind == "chat" else "task",
+            content=effective_prompt,
             author_user_id=user.id,
             status="COMPLETED",
             client_message_id=payload.client_request_id,
         )
     )
-    capture_user_urls(db, task, payload.prompt)
+    if route is not None and route.usage is not None:
+        db.add(
+            ApiUsage(
+                task_id=task.id,
+                purpose="interaction_router",
+                model=resolve_task_model(payload.model_mode, "worker", settings),
+                prompt_tokens=route.usage.prompt_tokens,
+                completion_tokens=route.usage.completion_tokens,
+                cache_hit_tokens=route.usage.cache_hit_tokens,
+                duration_ms=route.usage.duration_ms,
+            )
+        )
+    capture_user_urls(db, task, original_prompt)
     snapshot_project_files(db, task, project, payload.project_file_ids)
     add_event(db, task, "task.created", "任务已创建", progress=0)
     if queued:
@@ -292,8 +333,11 @@ def create_task(
     task_root(user.id, task.id)
     if queued:
         run_task.apply_async(args=[task.id], queue="control")
-    elif payload.start_immediately and payload.execution_kind == "chat":
-        chat_reply_task.apply_async(args=[task.id], queue="control")
+    elif payload.start_immediately and execution_kind == "chat":
+        chat_reply_task.apply_async(
+            args=[task.id, payload.web_search, original_prompt],
+            queue="chat",
+        )
     return task
 
 
@@ -342,7 +386,28 @@ def create_task_message(
         )
         if existing is not None:
             return existing
-    if payload.mode == "revise":
+    active_execution = task.status in {
+        TaskStatus.QUEUED,
+        TaskStatus.PLANNING,
+        TaskStatus.RUNNING,
+        TaskStatus.WAITING_APPROVAL,
+        TaskStatus.REVIEWING,
+        TaskStatus.REWORKING,
+        TaskStatus.PACKAGING,
+    }
+    route = None
+    if payload.mode == "auto" and active_execution and task.execution_kind != "chat":
+        message_mode = "supervisor"
+    else:
+        route = resolve_interaction_mode(
+            payload.content,
+            payload.mode,
+            task=task,
+            model_mode=task.model_mode,
+            settings=get_settings(),
+        )
+        message_mode = route.mode
+    if message_mode == "revise":
         if task.status not in {TaskStatus.SUCCEEDED, TaskStatus.FAILED, TaskStatus.CANCELED}:
             raise HTTPException(status_code=409, detail="任务仍在运行，完成后才能执行文件修改")
         if user_active_task_count(db, user) >= get_settings().max_active_tasks_per_user:
@@ -358,7 +423,7 @@ def create_task_message(
         task.started_at = None
         task.completed_at = None
         task.execution_kind = "revision"
-    elif payload.mode == "task":
+    elif message_mode == "task":
         if task.status != TaskStatus.CREATED:
             raise HTTPException(status_code=409, detail="只有未运行的聊天可以升级为执行任务")
         if user_active_task_count(db, user) >= get_settings().max_active_tasks_per_user:
@@ -367,27 +432,41 @@ def create_task_message(
             raise HTTPException(status_code=409, detail="系统并发任务已满，请稍后再试")
         task.execution_kind = "task"
         task.status = TaskStatus.QUEUED
+    if payload.execution_mode:
+        task.execution_mode = payload.execution_mode
+    original_content = payload.content.strip()
+    effective_content = (
+        _with_web_search_directive(original_content)
+        if payload.web_search and message_mode in {"revise", "task"}
+        else original_content
+    )
     message = TaskMessage(
         task_id=task.id,
         revision=task.current_revision,
         role="user",
-        mode=payload.mode,
-        content=payload.content.strip(),
+        mode=message_mode,
+        content=effective_content,
         author_user_id=user.id,
         status="COMPLETED",
         client_message_id=payload.client_message_id,
     )
     db.add(message)
-    capture_user_urls(db, task, message.content)
+    db.flush()
+    directive = None
+    if message_mode == "supervisor":
+        directive = TaskDirective(task_id=task.id, message_id=message.id)
+        db.add(directive)
+        task.supervisor_status = "QUEUED"
+    capture_user_urls(db, task, original_content)
     event_type = (
         "task.revision.queued"
-        if payload.mode == "revise"
-        else ("task.queued" if payload.mode == "task" else "message.user")
+        if message_mode == "revise"
+        else ("task.queued" if message_mode == "task" else "message.user")
     )
     title = (
         "文件修改已进入队列"
-        if payload.mode == "revise"
-        else ("任务已进入队列" if payload.mode == "task" else "用户发送了消息")
+        if message_mode == "revise"
+        else ("任务已进入队列" if message_mode == "task" else "用户发送了消息")
     )
     add_event(
         db,
@@ -395,15 +474,60 @@ def create_task_message(
         event_type,
         title,
         content=message.content[:1000],
-        progress=2 if payload.mode in {"revise", "task"} else None,
+        progress=2 if message_mode in {"revise", "task"} else None,
     )
+    if route is not None and route.usage is not None:
+        db.add(
+            ApiUsage(
+                task_id=task.id,
+                purpose="interaction_router",
+                model=resolve_task_model(task.model_mode, "worker", get_settings()),
+                prompt_tokens=route.usage.prompt_tokens,
+                completion_tokens=route.usage.completion_tokens,
+                cache_hit_tokens=route.usage.cache_hit_tokens,
+                duration_ms=route.usage.duration_ms,
+            )
+        )
     db.commit()
     db.refresh(message)
-    if payload.mode in {"revise", "task"}:
+    if message_mode == "supervisor" and directive is not None:
+        supervise_message_task.apply_async(args=[task.id, directive.id], queue="supervisor")
+    elif message_mode in {"revise", "task"}:
         run_task.apply_async(args=[task.id], queue="control")
     else:
-        chat_reply_task.apply_async(args=[task.id], queue="control")
+        chat_reply_task.apply_async(
+            args=[task.id, payload.web_search, original_content],
+            queue="chat",
+        )
     return message
+
+
+@router.get("/{task_id}/supervision", response_model=TaskSupervisionRead)
+def get_task_supervision(
+    task_id: str,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    task = accessible_task(db, task_id, user)
+    current_brief = db.scalar(
+        select(TaskBriefVersion)
+        .where(TaskBriefVersion.task_id == task.id)
+        .order_by(TaskBriefVersion.version.desc())
+        .limit(1)
+    )
+    directives = list(
+        db.scalars(
+            select(TaskDirective)
+            .where(TaskDirective.task_id == task.id)
+            .order_by(TaskDirective.created_at.desc())
+            .limit(50)
+        )
+    )
+    return TaskSupervisionRead(
+        status=task.supervisor_status,
+        current_brief=current_brief,
+        directives=directives,
+    )
 
 
 @router.get("/{task_id}/nodes", response_model=list[TaskNodeRead])
@@ -476,6 +600,7 @@ def start_task(
 @router.post("/{task_id}/chat-start", response_model=TaskRead)
 def start_chat(
     task_id: str,
+    web_search: bool = False,
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
@@ -484,7 +609,10 @@ def start_chat(
         raise HTTPException(status_code=409, detail="只有聊天草稿可以启动聊天回复")
     add_event(db, task, "message.user", "用户发送了消息", content=task.prompt[:1000])
     db.commit()
-    chat_reply_task.apply_async(args=[task.id], queue="control")
+    chat_reply_task.apply_async(
+        args=[task.id, web_search, task.prompt.strip()],
+        queue="chat",
+    )
     return task
 
 

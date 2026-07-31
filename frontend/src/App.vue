@@ -18,6 +18,7 @@ const projectDialogOpen = ref(false)
 const newProjectName = ref('')
 const creatingProject = ref(false)
 const bare = computed(() => Boolean(route.meta.bare) || !auth.user)
+const showSidebarContent = computed(() => !leftCollapsed.value || mobileDrawer.value)
 
 const taskGroups = computed(() => {
   const grouped = new Map<string, Task[]>()
@@ -30,6 +31,12 @@ const taskGroups = computed(() => {
   return grouped
 })
 
+const runningTaskCount = computed(() =>
+  tasks.value.filter(task =>
+    ['QUEUED', 'RUNNING', 'WAITING_APPROVAL', 'PLANNING', 'REVIEWING'].includes(task.status),
+  ).length,
+)
+
 async function refreshNavigation() {
   if (!auth.user || bare.value) return
   try {
@@ -41,6 +48,10 @@ async function refreshNavigation() {
 
 function closeMobile() {
   mobileDrawer.value = false
+}
+
+function closeMobileOnPageEntry() {
+  if (window.matchMedia('(max-width: 767px)').matches) closeMobile()
 }
 
 function showFiles() {
@@ -118,11 +129,14 @@ watch(
 )
 
 onMounted(() => {
+  closeMobileOnPageEntry()
   window.addEventListener('keydown', handleShortcut)
+  window.addEventListener('pageshow', closeMobileOnPageEntry)
   window.addEventListener('miniswarm:refresh-navigation', refreshNavigation)
 })
 onBeforeUnmount(() => {
   window.removeEventListener('keydown', handleShortcut)
+  window.removeEventListener('pageshow', closeMobileOnPageEntry)
   window.removeEventListener('miniswarm:refresh-navigation', refreshNavigation)
 })
 </script>
@@ -132,35 +146,34 @@ onBeforeUnmount(() => {
     <RouterView />
   </div>
   <div v-else class="codex-app">
-    <button class="mobile-menu-button" type="button" aria-label="打开导航" @click="mobileDrawer = true">☰</button>
+    <button class="mobile-menu-button" type="button" aria-label="打开边栏" @click="mobileDrawer = true">☰</button>
     <div v-if="mobileDrawer" class="drawer-backdrop" @click="closeMobile" />
     <aside :class="['workspace-sidebar', { collapsed: leftCollapsed, mobileOpen: mobileDrawer }]">
       <div class="sidebar-brand-row">
         <RouterLink to="/" class="workspace-brand" title="MiniSwarm">
           <span class="brand-mark">M</span>
-          <strong v-if="!leftCollapsed">MiniSwarm</strong>
         </RouterLink>
-        <button class="icon-button desktop-only" type="button" aria-label="折叠左栏" @click="toggleLeft">
-          {{ leftCollapsed ? '›' : '‹' }}
+        <button class="icon-button sidebar-toggle desktop-only" type="button" :aria-label="leftCollapsed ? '打开边栏' : '关闭边栏'" @click="toggleLeft">
+          {{ leftCollapsed ? '☰' : '◫' }}
         </button>
       </div>
 
       <nav class="primary-nav" aria-label="主导航">
-        <RouterLink to="/" class="nav-item"><span>✎</span><b>新建任务</b></RouterLink>
+        <RouterLink to="/" class="nav-item"><span>⌑</span><b>新聊天</b></RouterLink>
+        <RouterLink to="/search" class="nav-item"><span>⌕</span><b>搜索</b><kbd v-if="!leftCollapsed">Ctrl K</kbd></RouterLink>
         <RouterLink to="/queue" class="nav-item">
-          <span>◷</span><b>运行队列</b>
-          <em v-if="!leftCollapsed">{{ tasks.filter(t => ['QUEUED','RUNNING','WAITING_APPROVAL','PLANNING','REVIEWING'].includes(t.status)).length }}</em>
+          <span>◷</span><b>已安排</b>
+          <em v-if="showSidebarContent && runningTaskCount">{{ runningTaskCount }}</em>
         </RouterLink>
-        <RouterLink to="/search" class="nav-item"><span>⌕</span><b>全局搜索</b><kbd v-if="!leftCollapsed">⌘K</kbd></RouterLink>
-        <RouterLink to="/skills" class="nav-item"><span>◇</span><b>Skills</b></RouterLink>
-        <RouterLink to="/archived" class="nav-item"><span>▱</span><b>归档任务</b></RouterLink>
-        <RouterLink to="/memories" class="nav-item"><span>◎</span><b>全局记忆</b></RouterLink>
+        <RouterLink to="/skills" class="nav-item"><span>◇</span><b>插件</b></RouterLink>
+        <RouterLink to="/archived" class="nav-item"><span>▱</span><b>归档聊天</b></RouterLink>
+        <RouterLink to="/memories" class="nav-item"><span>◎</span><b>记忆</b></RouterLink>
       </nav>
 
-      <section v-if="!leftCollapsed" class="project-navigation">
+      <section v-if="showSidebarContent" class="project-navigation">
         <div class="sidebar-section-title">
           <span>项目</span>
-          <button class="icon-button" type="button" aria-label="创建项目" @click="addProject">＋</button>
+          <button class="icon-button" type="button" aria-label="新项目" title="新项目" @click="addProject">＋</button>
         </div>
         <div class="project-tree">
           <div v-for="project in projects" :key="project.id" class="project-tree-item">
@@ -184,13 +197,13 @@ onBeforeUnmount(() => {
       <div class="sidebar-footer">
         <button class="nav-item theme-switch" type="button" @click="toggleTheme">
           <span class="theme-icon" aria-hidden="true">{{ theme === 'dark' ? '☀' : '☾' }}</span>
-          <b v-if="!leftCollapsed">{{ theme === 'dark' ? '切换白色界面' : '切换黑色界面' }}</b>
+          <b v-if="showSidebarContent">{{ theme === 'dark' ? '浅色模式' : '深色模式' }}</b>
         </button>
         <RouterLink v-if="auth.user?.role === 'admin'" to="/admin" class="nav-item"><span>⚙</span><b>系统管理</b></RouterLink>
         <div class="account-row">
           <span class="account-avatar">{{ auth.user?.username.slice(0, 1).toUpperCase() }}</span>
-          <div v-if="!leftCollapsed"><strong>{{ auth.user?.username }}</strong><small>{{ auth.user?.role }}</small></div>
-          <button v-if="!leftCollapsed" class="icon-button" type="button" title="退出" @click="signOut">↪</button>
+          <div v-if="showSidebarContent"><strong>{{ auth.user?.username }}</strong><small>MiniSwarm {{ auth.user?.role }}</small></div>
+          <button v-if="showSidebarContent" class="icon-button account-menu-button" type="button" aria-label="退出登录" title="退出登录" @click="signOut">•••</button>
         </div>
       </div>
     </aside>
@@ -200,8 +213,8 @@ onBeforeUnmount(() => {
     </main>
 
     <nav class="mobile-bottom-nav" aria-label="手机导航">
-      <RouterLink to="/"><span>⌂</span><b>对话</b></RouterLink>
-      <RouterLink to="/queue"><span>◷</span><b>进度</b></RouterLink>
+      <RouterLink to="/"><span>⌑</span><b>聊天</b></RouterLink>
+      <RouterLink to="/queue"><span>◷</span><b>任务</b></RouterLink>
       <button type="button" @click="showFiles"><span>▱</span><b>文件</b></button>
       <button type="button" @click="mobileDrawer = true"><span>•••</span><b>更多</b></button>
     </nav>

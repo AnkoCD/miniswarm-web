@@ -40,6 +40,8 @@ export interface Task {
   error_message: string | null
   cancel_requested: boolean
   current_revision: number
+  brief_version: number
+  supervisor_status: string
   created_at: string
   started_at: string | null
   completed_at: string | null
@@ -110,7 +112,7 @@ export interface TaskMessage {
   task_id: string
   revision: number
   role: 'user' | 'assistant'
-  mode: 'task' | 'chat' | 'revise' | 'revision'
+  mode: 'task' | 'chat' | 'revise' | 'revision' | 'supervisor'
   content: string
   author_user_id: string | null
   status: 'STREAMING' | 'COMPLETED' | 'FAILED'
@@ -160,8 +162,42 @@ export interface TaskNode {
   status: string
   attempt: number
   result_summary: string | null
+  target_brief_version: number
+  applied_brief_version: number
   started_at: string | null
   completed_at: string | null
+}
+
+export interface TaskDirective {
+  id: string
+  task_id: string
+  message_id: string
+  status: string
+  kind: string
+  summary: string
+  affected_node_keys: string[]
+  requires_replan: boolean
+  applied_brief_version: number | null
+  error_message: string | null
+  created_at: string
+  processed_at: string | null
+}
+
+export interface TaskBrief {
+  id: string
+  task_id: string
+  version: number
+  goal: string
+  acceptance_criteria: string[]
+  change_summary: string
+  source_directive_id: string | null
+  created_at: string
+}
+
+export interface TaskSupervision {
+  status: string
+  current_brief: TaskBrief | null
+  directives: TaskDirective[]
 }
 
 export interface ToolCall {
@@ -210,12 +246,15 @@ export interface SkillInstallResult {
   name: string
   source: string
   source_ref: string
-  risk_score: number
-  risk_severity: string
-  recommendation: string
-  finding_count: number
-  scan_mode: string
   installed: boolean
+}
+
+export interface SkillRemoveResult {
+  name: string
+  removed: boolean
+  recoverable: boolean
+  trash_id: string
+  removed_at: string
 }
 
 export interface WorkerStatus {

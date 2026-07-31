@@ -5,7 +5,7 @@ from app.agent.skill_registry import AUTO_RULES, list_installed_skills
 from app.core.config import get_settings
 from app.dependencies import get_admin_user, get_current_user
 from app.models import User
-from app.schemas import SkillInstallRead, SkillInstallRequest, SkillRead
+from app.schemas import SkillInstallRead, SkillInstallRequest, SkillRead, SkillRemoveRead
 
 
 router = APIRouter(prefix="/skills", tags=["skills"])
@@ -33,5 +33,16 @@ def install_skill(
 ):
     try:
         return SkillManagerClient().scan_install(payload.url)
+    except SkillManagerError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.delete("/{name}", response_model=SkillRemoveRead)
+def remove_skill(
+    name: str,
+    _: User = Depends(get_admin_user),
+):
+    try:
+        return SkillManagerClient().remove(name)
     except SkillManagerError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc

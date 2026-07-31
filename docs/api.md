@@ -16,11 +16,17 @@
 - `PUT /api/admin/users/{id}/active`：管理员启用或停用账号。
 - `GET /api/admin/workers`：管理员查看 Celery Worker 在线和负载状态。
 - `GET /api/skills`：返回已安装 Skill 的名称、说明和来源，不返回任何密钥。
+- `POST /api/skills/install`：管理员直接添加公开 GitHub Skill；安全校验、提交固定和原子安装在服务端完成。
+- `DELETE /api/skills/{name}`：管理员移除 Skill；目录会进入服务器 Skill 回收区，不会永久删除。
+- `POST /api/tasks`：可通过 `execution_mode=deep` 开启深度思考；`web_search=true` 会在聊天中执行一次明确授权的联网检索，任务模式则把联网要求写入执行上下文。
+- `POST /api/tasks/{task_id}/messages`：支持 `execution_mode` 与 `web_search`，用于当前消息的思考和联网选项。
+- `execution_kind=auto` 与消息 `mode=auto`：由 DeepSeek 根据指令和任务状态自动选择聊天、执行任务或修改文件；模型不可用或判断无效时保守回退为聊天。
 - `GET /api/tasks`：仅返回本人任务，管理员可用 `all_users=true` 查看全部。
 - `POST /api/tasks`：创建任务草稿；除模型、思考和自主模式外，`skill_mode` 支持 `auto`、`manual`、`off`，`selected_skills` 保存用户选择；手动模式至少选择一项。
 - `GET /api/tasks/{id}`：任务详情。
 - `GET /api/tasks/{id}/messages`：读取持久化任务对话。
 - `POST /api/tasks/{id}/messages`：发送 `chat` 消息，或用 `revise` 开启新修订并继续修改任务文件。
+- `GET /api/tasks/{id}/supervision`：读取 Supervisor 状态、当前 Task Brief 与运行中要求。
 - `POST /api/tasks/{id}/files`：向尚未开始的任务上传文件。
 - `POST /api/tasks/{id}/start`：投递任务。
 - `POST /api/tasks/{id}/cancel`：请求取消。
@@ -51,6 +57,8 @@
 ## SSE 事件
 
 每条事件含数据库递增 ID。事件名称固定，例如 `task.created`、`task.planning`、`plan.created`、`agent.started`、`agent.progress`、`approval.required`、`artifact.created`、`task.completed` 和 `task.failed`。客户端先补读数据库历史，再订阅实时事件；模型内部推理不会作为事件返回。
+
+活动任务对 `mode=auto` 的消息会异步进入 Supervisor。API 立即返回已持久化消息，随后通过 `supervisor.received`、`supervisor.classified`、`brief.updated`、`directive.applied` 或 `directive.needs_clarification` 更新状态。
 
 ## 安全约定
 

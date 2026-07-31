@@ -9,6 +9,7 @@ import subprocess
 import tempfile
 import uuid
 import zipfile
+from datetime import datetime, timezone
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from urllib.parse import urlparse
@@ -303,3 +304,37 @@ def scan_and_install(url: str, settings: SkillManagerSettings) -> dict:
             "scan_mode": "static-only",
             "installed": True,
         }
+
+
+def remove_skill(name: str, settings: SkillManagerSettings) -> dict:
+    if not SKILL_NAME_RE.fullmatch(name):
+        raise SkillInstallError("Skill 名称无效")
+
+    skills_root = settings.skills_root.resolve(strict=False)
+    raw_destination = skills_root / name
+    if raw_destination.is_symlink():
+        raise SkillInstallError(f"Skill {name} 目录无效")
+    destination = raw_destination.resolve(strict=False)
+    if destination.parent != skills_root:
+        raise SkillInstallError("Skill 路径越界")
+    if destination.is_symlink() or not destination.is_dir():
+        raise SkillInstallError(f"Skill {name} 不存在")
+    if not (destination / "SKILL.md").is_file():
+        raise SkillInstallError(f"Skill {name} 目录无效")
+
+    trash_root = skills_root / ".trash"
+    if trash_root.exists() and (trash_root.is_symlink() or not trash_root.is_dir()):
+        raise SkillInstallError("Skill 回收区无效")
+    trash_root.mkdir(parents=True, exist_ok=True)
+
+    removed_at = datetime.now(timezone.utc)
+    trash_id = f"{name}-{removed_at.strftime('%Y%m%dT%H%M%SZ')}-{uuid.uuid4().hex[:8]}"
+    trash_destination = trash_root / trash_id
+    destination.rename(trash_destination)
+    return {
+        "name": name,
+        "removed": True,
+        "recoverable": True,
+        "trash_id": trash_id,
+        "removed_at": removed_at,
+    }

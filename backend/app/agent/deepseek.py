@@ -37,6 +37,7 @@ class ModelUsage:
 class ChatResult:
     message: dict[str, Any]
     usage: ModelUsage
+    finish_reason: str | None = None
 
 
 @dataclass(frozen=True)
@@ -71,9 +72,10 @@ class DeepSeekClient:
         payload: dict[str, Any] = {
             "model": model,
             "messages": messages,
-            "max_tokens": max_tokens or self.settings.planner_max_tokens,
             "thinking": {"type": "enabled" if thinking else "disabled"},
         }
+        if max_tokens is not None:
+            payload["max_tokens"] = max_tokens
         if thinking:
             payload["reasoning_effort"] = "max"
         if response_format:
@@ -111,7 +113,9 @@ class DeepSeekClient:
             raise DeepSeekError("DeepSeek 响应无法解析") from exc
         duration_ms = int((perf_counter() - started) * 1000)
         try:
-            message = body["choices"][0]["message"]
+            choice = body["choices"][0]
+            message = choice["message"]
+            finish_reason = choice.get("finish_reason")
             raw_usage = body.get("usage", {})
             details = raw_usage.get("prompt_tokens_details") or {}
             usage = ModelUsage(
@@ -122,7 +126,7 @@ class DeepSeekClient:
             )
         except (KeyError, IndexError, TypeError, ValueError) as exc:
             raise DeepSeekError("DeepSeek 响应缺少必要字段") from exc
-        return ChatResult(message=message, usage=usage)
+        return ChatResult(message=message, usage=usage, finish_reason=finish_reason)
 
     def stream_chat(
         self,
@@ -139,13 +143,14 @@ class DeepSeekClient:
         payload: dict[str, Any] = {
             "model": model,
             "messages": messages,
-            "max_tokens": max_tokens or self.settings.planner_max_tokens,
             "thinking": {"type": "enabled" if thinking else "disabled"},
             "stream": True,
             "stream_options": {"include_usage": True},
         }
+        if max_tokens is not None:
+            payload["max_tokens"] = max_tokens
         if thinking:
-            payload["reasoning_effort"] = "high"
+            payload["reasoning_effort"] = "max"
         started = perf_counter()
         final_usage: dict[str, Any] = {}
         try:

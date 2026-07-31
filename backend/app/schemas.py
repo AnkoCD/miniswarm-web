@@ -54,8 +54,9 @@ class TaskCreate(BaseModel):
     start_immediately: bool = True
     project_id: str | None = None
     project_file_ids: list[str] = Field(default_factory=list, max_length=100)
-    execution_kind: Literal["chat", "task", "revision"] = "task"
+    execution_kind: Literal["auto", "chat", "task", "revision"] = "task"
     client_request_id: str | None = Field(default=None, min_length=8, max_length=64)
+    web_search: bool = False
 
 
 class TaskRead(BaseModel):
@@ -80,6 +81,8 @@ class TaskRead(BaseModel):
     cancel_requested: bool
     review_retries: int
     current_revision: int
+    brief_version: int
+    supervisor_status: str
     created_at: datetime
     started_at: datetime | None
     completed_at: datetime | None
@@ -109,8 +112,10 @@ class EventList(BaseModel):
 
 class TaskMessageCreate(BaseModel):
     content: str = Field(min_length=1, max_length=20_000)
-    mode: Literal["chat", "revise", "task"] = "chat"
+    mode: Literal["auto", "chat", "revise", "task"] = "chat"
     client_message_id: str | None = Field(default=None, min_length=8, max_length=64)
+    execution_mode: str | None = Field(default=None, pattern="^(standard|deep)$")
+    web_search: bool = False
 
 
 class TaskMessageRead(BaseModel):
@@ -125,6 +130,40 @@ class TaskMessageRead(BaseModel):
     status: str
     client_message_id: str | None
     created_at: datetime
+
+
+class TaskDirectiveRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: str
+    task_id: str
+    message_id: str
+    status: str
+    kind: str
+    summary: str
+    affected_node_keys: list[str]
+    requires_replan: bool
+    applied_brief_version: int | None
+    error_message: str | None
+    created_at: datetime
+    processed_at: datetime | None
+
+
+class TaskBriefRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: str
+    task_id: str
+    version: int
+    goal: str
+    acceptance_criteria: list[str]
+    change_summary: str
+    source_directive_id: str | None
+    created_at: datetime
+
+
+class TaskSupervisionRead(BaseModel):
+    status: str
+    current_brief: TaskBriefRead | None
+    directives: list[TaskDirectiveRead]
 
 
 class ApprovalRead(BaseModel):
@@ -160,6 +199,7 @@ class ArtifactRead(BaseModel):
     preview_kind: str
     inspection_status: str
     preview_metadata: dict
+    brief_version: int
     created_at: datetime
 
 
@@ -177,6 +217,8 @@ class TaskNodeRead(BaseModel):
     status: NodeStatus
     attempt: int
     result_summary: str | None
+    target_brief_version: int
+    applied_brief_version: int
     started_at: datetime | None
     completed_at: datetime | None
 
@@ -245,6 +287,14 @@ class SkillInstallRead(BaseModel):
     finding_count: int
     scan_mode: str
     installed: bool
+
+
+class SkillRemoveRead(BaseModel):
+    name: str
+    removed: bool
+    recoverable: bool
+    trash_id: str
+    removed_at: datetime
 
 
 class ArchiveTaskRead(TaskRead):

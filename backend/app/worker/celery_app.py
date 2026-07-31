@@ -16,7 +16,9 @@ celery_app.conf.update(
     timezone="UTC",
     task_routes={
         "miniswarm.run_task": {"queue": "control"},
-        "miniswarm.chat_reply": {"queue": "control"},
+        "miniswarm.plan_task": {"queue": "planner"},
+        "miniswarm.supervise_message": {"queue": "supervisor"},
+        "miniswarm.chat_reply": {"queue": "chat"},
         "miniswarm.execute_node": {"queue": "agent"},
         "miniswarm.analyze_archive_memory": {"queue": "memory"},
     },

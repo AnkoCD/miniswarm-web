@@ -1,7 +1,7 @@
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.models import Approval, Project, ProjectFile, ProjectMemory, ProjectMemoryProfile, Task, TaskEvent, TaskMessage, TaskStatus, ToolCall, ToolCallStatus, User
+from app.models import Approval, Project, ProjectFile, ProjectMemory, ProjectMemoryProfile, Task, TaskBriefVersion, TaskEvent, TaskMessage, TaskStatus, ToolCall, ToolCallStatus, User
 from app.memory import memory_context
 
 
@@ -40,7 +40,7 @@ def ensure_initial_message(db: Session, task: Task) -> TaskMessage:
     return message
 
 
-def task_conversation(db: Session, task: Task, *, limit: int = 40) -> list[TaskMessage]:
+def task_conversation(db: Session, task: Task, *, limit: int = 12) -> list[TaskMessage]:
     ensure_initial_message(db, task)
     recent = list(
         db.scalars(
@@ -67,7 +67,7 @@ def task_execution_prompt(db: Session, task: Task) -> str:
                 ProjectMemory.status == "ACTIVE",
             )
             .order_by(ProjectMemory.updated_at.desc())
-            .limit(30)
+            .limit(10)
         )
     ) if task.project_id else []
     project_files = list(
@@ -78,9 +78,18 @@ def task_execution_prompt(db: Session, task: Task) -> str:
                 ProjectFile.archived_at.is_(None),
             )
             .order_by(ProjectFile.filename)
-            .limit(100)
+            .limit(30)
         )
     ) if task.project_id else []
+    briefs = list(
+        db.scalars(
+            select(TaskBriefVersion)
+            .where(TaskBriefVersion.task_id == task.id)
+            .order_by(TaskBriefVersion.version.desc())
+            .limit(6)
+        )
+    )
+    briefs.reverse()
     lines = [
         f"原始任务：{task.prompt}",
         f"Skill 模式：{getattr(task, 'skill_mode', 'auto')}",
@@ -104,7 +113,13 @@ def task_execution_prompt(db: Session, task: Task) -> str:
     for message in messages:
         label = "用户" if message.role == "user" else "助手"
         lines.append(f"[{label} / 第 {message.revision} 轮] {message.content}")
-    return "\n".join(lines)[-40_000:]
+    if briefs:
+        lines.extend(["", f"当前任务简报版本：v{task.brief_version}"])
+        for brief in briefs:
+            lines.append(f"[v{brief.version}] {brief.change_summary or brief.goal}")
+            if brief.version == task.brief_version and brief.acceptance_criteria:
+                lines.append("当前验收条件：" + "；".join(brief.acceptance_criteria))
+    return "\n".join(lines)[-20_000:]
 
 
 def user_active_task_count(db: Session, user: User) -> int:

@@ -38,7 +38,7 @@ services:
 
   worker-control:
     image: miniswarm-backend:latest
-    command: ["celery", "-A", "app.worker.celery_app:celery_app", "worker", "-Q", "control", "--concurrency=1", "--loglevel=INFO"]
+    command: ["celery", "-A", "app.worker.celery_app:celery_app", "worker", "-Q", "control", "--concurrency=${CONTROL_CONCURRENCY:-1}", "--loglevel=INFO"]
     env_file: .env
     restart: unless-stopped
     volumes:
@@ -64,6 +64,51 @@ services:
       redis:
         condition: service_healthy
       skill-manager:
+        condition: service_healthy
+    networks: [backend_net, egress_net]
+
+  worker-supervisor:
+    image: miniswarm-backend:latest
+    command: ["celery", "-A", "app.worker.celery_app:celery_app", "worker", "-Q", "supervisor", "--concurrency=${SUPERVISOR_CONCURRENCY:-1}", "--loglevel=INFO"]
+    env_file: .env
+    restart: unless-stopped
+    volumes:
+      - task_data:/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks: [backend_net, egress_net]
+
+  worker-planner:
+    image: miniswarm-backend:latest
+    command: ["celery", "-A", "app.worker.celery_app:celery_app", "worker", "-Q", "planner", "--concurrency=${PLANNER_CONCURRENCY:-1}", "--loglevel=INFO"]
+    env_file: .env
+    restart: unless-stopped
+    volumes:
+      - task_data:/data
+      - ./skills:/skills:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks: [backend_net, egress_net]
+
+  worker-chat:
+    image: miniswarm-backend:latest
+    command: ["celery", "-A", "app.worker.celery_app:celery_app", "worker", "-Q", "chat", "--concurrency=${CHAT_CONCURRENCY:-2}", "--loglevel=INFO"]
+    env_file: .env
+    restart: unless-stopped
+    volumes:
+      - task_data:/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      runner:
         condition: service_healthy
     networks: [backend_net, egress_net]
 

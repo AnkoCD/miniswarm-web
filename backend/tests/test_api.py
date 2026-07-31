@@ -245,6 +245,72 @@ def test_task_chat_is_persisted(authenticated_client, monkeypatch):
     assert queued == [task["id"]]
 
 
+def test_chat_options_enable_thinking_and_queue_web_search(authenticated_client, monkeypatch):
+    queued: list[list] = []
+    monkeypatch.setattr(
+        "app.api.tasks.chat_reply_task.apply_async",
+        lambda args, queue: queued.append(args),
+    )
+    task = authenticated_client.post(
+        "/api/tasks",
+        json={
+            "prompt": "先建立聊天",
+            "execution_kind": "chat",
+            "start_immediately": False,
+        },
+    ).json()
+    response = authenticated_client.post(
+        f"/api/tasks/{task['id']}/messages",
+        json={
+            "content": "搜索今天的主要 AI 新闻",
+            "mode": "chat",
+            "execution_mode": "deep",
+            "web_search": True,
+        },
+    )
+    assert response.status_code == 202
+    assert response.json()["content"] == "搜索今天的主要 AI 新闻"
+    assert queued == [[task["id"], True, "搜索今天的主要 AI 新闻"]]
+    assert authenticated_client.get(f"/api/tasks/{task['id']}").json()["execution_mode"] == "deep"
+
+
+def test_task_web_search_adds_persistent_execution_directive(authenticated_client, monkeypatch):
+    monkeypatch.setattr("app.api.tasks.run_task.apply_async", lambda *args, **kwargs: None)
+    task = authenticated_client.post(
+        "/api/tasks",
+        json={
+            "prompt": "分析最新发布信息",
+            "execution_kind": "task",
+            "web_search": True,
+            "start_immediately": False,
+        },
+    ).json()
+    messages = authenticated_client.get(f"/api/tasks/{task['id']}/messages").json()
+    assert task["prompt"].startswith("【联网检索】")
+    assert messages[0]["content"].startswith("【联网检索】")
+    assert messages[0]["content"].endswith("分析最新发布信息")
+
+
+def test_auto_mode_routes_new_prompt_without_manual_switch(authenticated_client, monkeypatch):
+    from app.agent.interaction_router import InteractionRoute
+
+    monkeypatch.setattr(
+        "app.api.tasks.resolve_interaction_mode",
+        lambda *args, **kwargs: InteractionRoute(mode="task", source="model"),
+    )
+    monkeypatch.setattr("app.api.tasks.run_task.apply_async", lambda *args, **kwargs: None)
+    task = authenticated_client.post(
+        "/api/tasks",
+        json={
+            "prompt": "制作一份项目报告",
+            "execution_kind": "auto",
+            "start_immediately": False,
+        },
+    )
+    assert task.status_code == 201
+    assert task.json()["execution_kind"] == "task"
+
+
 def test_file_revision_starts_new_revision(authenticated_client, monkeypatch):
     from app.db import SessionLocal
     from app.models import Task, TaskStatus

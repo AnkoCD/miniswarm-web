@@ -26,6 +26,7 @@ from app.models import (
     Artifact,
     NodeStatus,
     Task,
+    TaskBriefVersion,
     TaskNode,
     TaskStatus,
     ToolCall,
@@ -203,11 +204,13 @@ class AgentExecutor:
 
         for _round in range(self.settings.max_agent_rounds):
             db.refresh(task)
+            db.refresh(node)
             if task.cancel_requested:
                 node.status = NodeStatus.CANCELED
                 self._finish_run(agent_run, "CANCELED", "任务已取消")
                 db.commit()
                 return ExecutionOutcome("failed", "任务已取消")
+            self._apply_brief_updates(db, task, node, messages)
             try:
                 result = self.model.chat(
                     model=model_name,
@@ -215,7 +218,7 @@ class AgentExecutor:
                     thinking=thinking_enabled,
                     tools=tools,
                     response_format={"type": "json_object"} if node.role == "reviewer" else None,
-                    max_tokens=8_000,
+                    max_tokens=None,
                 )
             except DeepSeekError as exc:
                 node.status = NodeStatus.FAILED
@@ -239,13 +242,16 @@ class AgentExecutor:
             message = {
                 key: value
                 for key, value in result.message.items()
-                if key in {"role", "content", "reasoning_content", "tool_calls"}
+                if key in {"role", "content", "tool_calls"}
             }
             message.setdefault("role", "assistant")
-            messages.append(message)
             tool_calls = message.get("tool_calls") or []
+            content = message.get("content")
+            messages.append(message)
             if not tool_calls:
-                content = message.get("content")
+                db.refresh(node)
+                if self._apply_brief_updates(db, task, node, messages):
+                    continue
                 if not isinstance(content, str) or not content.strip():
                     node.status = NodeStatus.FAILED
                     node.result_summary = "模型未返回结果"
@@ -515,7 +521,7 @@ class AgentExecutor:
                             return ExecutionOutcome("failed", node.result_summary[:1000])
                 db.commit()
                 serialized = json.dumps(tool_payload, ensure_ascii=False)
-                messages.append({"role": "tool", "tool_call_id": call_id, "content": serialized[:40_000]})
+                messages.append({"role": "tool", "tool_call_id": call_id, "content": serialized[:12_000]})
 
         node.status = NodeStatus.FAILED
         node.result_summary = "Agent 达到最大循环次数"
@@ -530,6 +536,51 @@ class AgentExecutor:
         agent_run.status = status
         agent_run.result_summary = summary
         agent_run.completed_at = datetime.now(UTC)
+
+    @staticmethod
+    def _apply_brief_updates(
+        db: Session,
+        task: Task,
+        node: TaskNode,
+        messages: list[dict],
+    ) -> bool:
+        if node.target_brief_version <= node.applied_brief_version:
+            return False
+        briefs = list(
+            db.scalars(
+                select(TaskBriefVersion)
+                .where(
+                    TaskBriefVersion.task_id == task.id,
+                    TaskBriefVersion.version > node.applied_brief_version,
+                    TaskBriefVersion.version <= node.target_brief_version,
+                )
+                .order_by(TaskBriefVersion.version)
+            )
+        )
+        if not briefs:
+            node.applied_brief_version = node.target_brief_version
+            db.commit()
+            return False
+        delta = "\n".join(f"- v{brief.version}: {brief.change_summary}" for brief in briefs)
+        messages.append(
+            {
+                "role": "user",
+                "content": (
+                    "Supervisor 已在安全检查点合并以下新要求。请保留仍有效的工作，"
+                    "只修改受影响部分：\n" + delta
+                ),
+            }
+        )
+        node.applied_brief_version = node.target_brief_version
+        add_event(
+            db,
+            task,
+            "directive.applied",
+            f"{node.title} 已接收最新要求",
+            content=f"Brief v{node.applied_brief_version}",
+        )
+        db.commit()
+        return True
 
     @staticmethod
     def _failure_guidance(tool_name: str, detail: str) -> str:
@@ -610,6 +661,7 @@ class AgentExecutor:
                 artifact.is_final = True
                 artifact.preview_kind = preview_kind(path.name, mime_type)
                 artifact.inspection_status = "READY"
+                artifact.brief_version = node.applied_brief_version
                 artifact.created_at = datetime.now(UTC)
                 add_event(db, task, "artifact.updated", f"已更新 {path.name}", content=relative)
                 continue
@@ -623,6 +675,7 @@ class AgentExecutor:
                 is_final=True,
                 preview_kind=preview_kind(path.name, mime_type),
                 inspection_status="READY",
+                brief_version=node.applied_brief_version,
             )
             db.add(artifact)
             add_event(db, task, "artifact.created", f"已生成 {path.name}", content=relative)

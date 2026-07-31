@@ -27,7 +27,7 @@ class TaskPlan(BaseModel):
     mode: Literal["single", "swarm"]
     goal: str = Field(min_length=3, max_length=1000)
     acceptance_criteria: list[str] = Field(default_factory=list, max_length=12)
-    nodes: list[PlanNode] = Field(min_length=2, max_length=9)
+    nodes: list[PlanNode] = Field(min_length=2, max_length=13)
 
     @model_validator(mode="after")
     def validate_graph(self):
@@ -80,7 +80,7 @@ class TaskPlan(BaseModel):
 SYSTEM_PROMPT = """你是 MiniSwarm 的任务规划器。只输出一个 JSON 对象，不要输出 Markdown。
 你要选择 single 或 swarm。只有至少两个真正独立、不会同时写同一文件的子任务才选择 swarm。
 子 Agent 不能再创建 Agent。最后一个节点必须是 reviewer，且依赖所有最终产出节点。
-最多创建 8 个工作 Agent，另加 1 个 reviewer；简单任务仍只创建 1 个工作 Agent。
+最多创建 12 个工作 Agent，另加 1 个 reviewer；简单任务仍只创建 1 个工作 Agent。
 必须输出 acceptance_criteria，列出 2 到 8 条可客观验证的验收条件；包含用户明确要求的文件格式、数量、语言、来源和质量要求。
 允许的角色：researcher, reader, data_analyst, coder, document, file_worker, reviewer。
 办公任务优先使用 document、data_analyst、reader 和 researcher；除非确实需要软件项目或自动化脚本，不要为 Word、Excel、PPT、PDF 任务创建 coder 节点。

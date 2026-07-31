@@ -11,6 +11,7 @@ import {
   getEvents,
   getMe,
   getTask,
+  getTaskSupervision,
   getUsage,
   listApprovals,
   listArtifacts,
@@ -41,6 +42,7 @@ import type {
   TaskMessage,
   TaskNode,
   TaskSource,
+  TaskSupervision,
   ToolCall,
   UsageSummary,
 } from '../types'
@@ -52,21 +54,25 @@ const task = ref<Task | null>(null)
 const projects = ref<Project[]>([])
 const projectFiles = ref<ProjectFile[]>([])
 const selectedProjectId = ref('')
+const projectPinnedByRoute = computed(() => {
+  const routeProjectId = String(route.query.project || '')
+  return Boolean(routeProjectId && selectedProjectId.value === routeProjectId)
+})
 const selectedProjectFiles = ref<string[]>([])
 const skills = ref<Skill[]>([])
 const selectedSkills = ref<string[]>([])
 const skillMode = ref<'auto' | 'manual' | 'off'>('auto')
-const mode = ref<'chat' | 'task' | 'revise'>('chat')
 const prompt = ref('')
 const attachments = ref<File[]>([])
 const modelMode = ref('auto')
 const executionMode = ref('standard')
+const webSearchEnabled = ref(false)
 const autonomyMode = ref('safe')
 const taskType = ref('auto')
 const settingsOpen = ref(false)
 const submitting = ref(false)
 const loading = ref(true)
-const rightOpen = ref(localStorage.getItem('miniswarm:right-open') !== 'false')
+const rightOpen = ref(false)
 const mobileContextOpen = ref(false)
 const activeTab = ref<'conversation' | 'file'>('conversation')
 const previewArtifact = ref<Artifact | null>(null)
@@ -78,8 +84,11 @@ const nodes = ref<TaskNode[]>([])
 const toolCalls = ref<ToolCall[]>([])
 const sources = ref<TaskSource[]>([])
 const usage = ref<UsageSummary | null>(null)
+const supervision = ref<TaskSupervision | null>(null)
 const loadError = ref('')
 const messageList = ref<HTMLElement | null>(null)
+const runLog = ref<HTMLElement | null>(null)
+const composerTextarea = ref<HTMLTextAreaElement | null>(null)
 const autoFollow = ref(true)
 const uploadDone = ref(0)
 const uploadTotal = ref(0)
@@ -88,7 +97,7 @@ let refreshTimer: ReturnType<typeof setTimeout> | null = null
 let refreshInFlight = false
 const pendingRefresh = new Set<RefreshSection>()
 
-type RefreshSection = 'task' | 'messages' | 'artifacts' | 'approvals' | 'nodes' | 'tools' | 'sources' | 'usage'
+type RefreshSection = 'task' | 'messages' | 'artifacts' | 'approvals' | 'nodes' | 'tools' | 'sources' | 'usage' | 'supervision'
 
 const terminal = computed(() => Boolean(task.value && ['SUCCEEDED', 'FAILED', 'CANCELED'].includes(task.value.status)))
 const running = computed(() => Boolean(task.value && !['CREATED', 'SUCCEEDED', 'FAILED', 'CANCELED'].includes(task.value.status)))
@@ -107,6 +116,9 @@ const isWebDesignTask = computed(() => {
 })
 const draftKey = computed(() => `miniswarm:composer-draft:${taskId.value || 'new'}`)
 const attachmentTotalSize = computed(() => attachments.value.reduce((sum, file) => sum + file.size, 0))
+const thinkingEnabled = computed(() => executionMode.value === 'deep')
+
+const WEB_SEARCH_DIRECTIVE = '【联网检索】请使用可用的联网搜索工具核对最新信息，并在结论中保留可追溯来源。'
 
 const statusLabel: Record<string, string> = {
   CREATED: '对话', QUEUED: '排队中', PLANNING: '规划中', RUNNING: '执行中',
@@ -126,6 +138,16 @@ function formatSize(size: number) {
 
 function formatNumber(value: number) {
   return new Intl.NumberFormat('zh-CN', { notation: value >= 10_000 ? 'compact' : 'standard' }).format(value)
+}
+
+function displayMessageContent(content: string) {
+  return content.startsWith(WEB_SEARCH_DIRECTIVE)
+    ? content.slice(WEB_SEARCH_DIRECTIVE.length).trimStart()
+    : content
+}
+
+function toggleThinking() {
+  executionMode.value = thinkingEnabled.value ? 'standard' : 'deep'
 }
 
 function isNearBottom() {
@@ -150,8 +172,9 @@ function restoreComposerState() {
   try {
     const preferences = JSON.parse(localStorage.getItem('miniswarm:composer-preferences') || '{}')
     modelMode.value = preferences.modelMode || modelMode.value
-    executionMode.value = preferences.executionMode || executionMode.value
+    if (!task.value) executionMode.value = preferences.executionMode || executionMode.value
     autonomyMode.value = preferences.autonomyMode || autonomyMode.value
+    webSearchEnabled.value = Boolean(preferences.webSearchEnabled)
     taskType.value = preferences.taskType || taskType.value
     skillMode.value = preferences.skillMode || skillMode.value
     const installed = new Set(skills.value.map(item => item.name))
@@ -165,8 +188,13 @@ function restoreComposerState() {
 }
 
 function toggleRight() {
+  if (window.matchMedia('(max-width: 767px)').matches) {
+    mobileContextOpen.value = !mobileContextOpen.value
+    rightOpen.value = mobileContextOpen.value
+    return
+  }
   rightOpen.value = !rightOpen.value
-  localStorage.setItem('miniswarm:right-open', String(rightOpen.value))
+  localStorage.setItem('miniswarm:run-panel-open', String(rightOpen.value))
 }
 
 function showPreview(artifact: Artifact) {
@@ -194,7 +222,7 @@ async function loadProjectFiles() {
 
 async function loadTaskData(reconnect = true, scrollToEnd = reconnect) {
   if (!taskId.value) return
-  const [taskValue, messageValues, eventValues, artifactValues, approvalValues, nodeValues, toolValues, sourceValues, usageValue] = await Promise.all([
+  const [taskValue, messageValues, eventValues, artifactValues, approvalValues, nodeValues, toolValues, sourceValues, usageValue, supervisionValue] = await Promise.all([
     getTask(taskId.value),
     listTaskMessages(taskId.value),
     getEvents(taskId.value),
@@ -204,6 +232,7 @@ async function loadTaskData(reconnect = true, scrollToEnd = reconnect) {
     listToolCalls(taskId.value),
     listTaskSources(taskId.value),
     getUsage(taskId.value),
+    getTaskSupervision(taskId.value),
   ])
   task.value = taskValue
   selectedProjectId.value = taskValue.project_id || ''
@@ -215,7 +244,10 @@ async function loadTaskData(reconnect = true, scrollToEnd = reconnect) {
   toolCalls.value = toolValues
   sources.value = sourceValues
   usage.value = usageValue
-  mode.value = terminal.value ? 'chat' : (taskValue.execution_kind === 'chat' ? 'chat' : 'chat')
+  supervision.value = supervisionValue
+  executionMode.value = taskValue.execution_mode || executionMode.value
+  rightOpen.value = !window.matchMedia('(max-width: 767px)').matches
+    && localStorage.getItem('miniswarm:run-panel-open') !== 'false'
   if (reconnect) connectStream()
   if (scrollToEnd) scrollToLatest(true)
 }
@@ -250,6 +282,7 @@ async function initialize() {
 }
 
 function sectionsForEvent(name: string): RefreshSection[] {
+  if (name.startsWith('supervisor.') || name.startsWith('directive.') || name === 'brief.updated') return ['task', 'messages', 'nodes', 'supervision', 'usage']
   if (name.startsWith('artifact.') || name === 'file.uploaded') return ['task', 'artifacts']
   if (name.startsWith('approval.')) return ['task', 'approvals', 'nodes']
   if (name.startsWith('tool.')) return ['task', 'tools', 'sources']
@@ -271,6 +304,7 @@ async function refreshSections(sections: Set<RefreshSection>) {
   if (sections.has('tools')) jobs.push(listToolCalls(taskId.value).then(value => { toolCalls.value = value }))
   if (sections.has('sources')) jobs.push(listTaskSources(taskId.value).then(value => { sources.value = value }))
   if (sections.has('usage')) jobs.push(getUsage(taskId.value).then(value => { usage.value = value }))
+  if (sections.has('supervision')) jobs.push(getTaskSupervision(taskId.value).then(value => { supervision.value = value }))
   await Promise.all(jobs)
 }
 
@@ -342,6 +376,7 @@ function connectStream() {
     'delivery.blocked',
     'approval.required', 'approval.approved', 'approval.denied', 'approval.auto_approved',
     'message.started', 'message.delta', 'message.completed', 'message.failed', 'message.user',
+    'supervisor.received', 'supervisor.classified', 'directive.needs_clarification', 'directive.applied', 'brief.updated',
   ]
   for (const name of names) {
     stream.addEventListener(name, event => {
@@ -377,24 +412,25 @@ async function submit() {
     if (!selectedProjectId.value) return showFailToast('没有可写项目，请刷新页面或让项目所有者授予编辑权限')
   }
   if (skillMode.value === 'manual' && !selectedSkills.value.length) return showFailToast('请至少选择一个 Skill')
-  if (mode.value === 'revise' && !terminal.value) return showFailToast('任务结束后才能修改文件')
   submitting.value = true
   try {
     if (task.value) {
-      await sendTaskMessage(task.value.id, content, mode.value, uuid())
+      await sendTaskMessage(task.value.id, content, 'auto', uuid(), {
+        executionMode: executionMode.value === 'deep' ? 'deep' : 'standard',
+        webSearch: webSearchEnabled.value,
+      })
       prompt.value = ''
       await loadTaskData(false)
-      if (mode.value === 'task') mode.value = 'chat'
     } else {
-      const execute = mode.value === 'task'
       const hasUploads = attachments.value.length > 0
       const created = await createTask({
         prompt: content,
         title: content.split('\n')[0].slice(0, 80),
         project_id: selectedProjectId.value,
         project_file_ids: selectedProjectFiles.value,
-        execution_kind: execute ? 'task' : 'chat',
+        execution_kind: 'auto',
         client_request_id: uuid(),
+        web_search: webSearchEnabled.value,
         task_type: taskType.value,
         model_mode: modelMode.value,
         execution_mode: executionMode.value,
@@ -413,8 +449,8 @@ async function submit() {
         }))
       }
       if (hasUploads) {
-        if (execute) await startTask(created.id)
-        else await startChat(created.id)
+        if (created.execution_kind === 'task') await startTask(created.id)
+        else await startChat(created.id, webSearchEnabled.value)
       }
       localStorage.setItem('miniswarm:last-project', selectedProjectId.value)
       localStorage.removeItem(draftKey.value)
@@ -515,7 +551,20 @@ function handleComposerKey(event: KeyboardEvent) {
   }
 }
 
+function resizeComposerTextarea() {
+  nextTick(() => {
+    const element = composerTextarea.value
+    if (!element) return
+    element.style.height = 'auto'
+    const minHeight = 58
+    const maxHeight = 220
+    element.style.height = `${Math.min(Math.max(element.scrollHeight, minHeight), maxHeight)}px`
+    element.style.overflowY = element.scrollHeight > maxHeight ? 'auto' : 'hidden'
+  })
+}
+
 function openFilesOnMobile() {
+  rightOpen.value = true
   mobileContextOpen.value = true
   setTimeout(() => document.querySelector('#context-files')?.scrollIntoView({ behavior: 'smooth' }), 50)
 }
@@ -528,18 +577,26 @@ function escapePanels() {
 watch(prompt, value => {
   if (value) localStorage.setItem(draftKey.value, value)
   else localStorage.removeItem(draftKey.value)
+  resizeComposerTextarea()
 })
 
-watch([modelMode, executionMode, autonomyMode, taskType, skillMode, selectedSkills], () => {
+watch([modelMode, executionMode, webSearchEnabled, autonomyMode, taskType, skillMode, selectedSkills], () => {
   localStorage.setItem('miniswarm:composer-preferences', JSON.stringify({
     modelMode: modelMode.value,
     executionMode: executionMode.value,
     autonomyMode: autonomyMode.value,
+    webSearchEnabled: webSearchEnabled.value,
     taskType: taskType.value,
     skillMode: skillMode.value,
     selectedSkills: selectedSkills.value,
   }))
 }, { deep: true })
+
+watch(() => executionEvents.value.length, () => {
+  nextTick(() => {
+    if (runLog.value) runLog.value.scrollTop = runLog.value.scrollHeight
+  })
+})
 
 onMounted(() => {
   initialize()
@@ -569,8 +626,9 @@ onBeforeUnmount(() => {
     <div class="conversation-column">
       <header class="workbench-header">
         <div class="header-identity">
+          <strong class="product-title">MiniSwarm</strong>
           <span class="project-breadcrumb">{{ currentProject?.name || '选择项目' }}</span>
-          <strong>{{ task?.title || '新建任务' }}</strong>
+          <span v-if="task" class="conversation-title">{{ task.title }}</span>
         </div>
         <div class="header-status">
           <span v-if="task" :class="['status-pill', `status-${task.status.toLowerCase()}`]">{{ statusLabel[task.status] }}</span>
@@ -578,20 +636,20 @@ onBeforeUnmount(() => {
           <span v-if="task">{{ task.execution_mode === 'deep' ? '深度思考' : '标准' }}</span>
           <span v-if="task" :class="{ yolo: task.autonomy_mode === 'yolo' }">{{ task.autonomy_mode === 'yolo' ? 'YOLO' : '安全' }}</span>
           <button v-if="task && ['FAILED', 'CANCELED'].includes(task.status)" class="header-action-button" type="button" @click="retryCurrent">重试</button>
-          <RouterLink v-if="task" class="header-action-button" to="/">新任务</RouterLink>
-          <button class="icon-button" type="button" :aria-label="rightOpen ? '收起上下文栏' : '打开上下文栏'" @click="toggleRight">☷</button>
+          <RouterLink v-if="task" class="header-action-button" to="/">新聊天</RouterLink>
+          <button class="icon-button context-toggle" type="button" :aria-label="rightOpen ? '关闭任务详情' : '打开任务详情'" title="任务详情" @click="toggleRight">•••</button>
         </div>
       </header>
 
       <div v-if="activeTab === 'conversation'" ref="messageList" class="conversation-scroll" @scroll.passive="trackScroll">
         <div v-if="!task" class="new-workspace-hero">
-          <div class="hero-orb">M</div>
-          <h1>今天想完成什么？</h1>
-          <p>选择一个项目，然后聊天、执行任务或基于已有文件继续修改。</p>
+          <h1>我们先从哪里开始呢？</h1>
+          <p>选择项目后，直接提问或交给 Agent 完成任务。</p>
           <div class="capability-grid">
-            <button type="button" @click="prompt = '分析项目资料并整理关键结论'; mode = 'task'"><span>⌕</span><strong>分析资料</strong><small>并行读取与验证</small></button>
-            <button type="button" @click="prompt = '根据项目资料制作一份演示文稿'; mode = 'task'"><span>▣</span><strong>制作文件</strong><small>PPT、Word、PDF、Excel</small></button>
-            <button type="button" @click="prompt = '检查现有代码并给出改进建议'; mode = 'task'"><span>⌘</span><strong>代码任务</strong><small>生成、修改、测试</small></button>
+            <button type="button" @click="prompt = '帮我整理待办，并按优先级给出下一步建议'"><span>✓</span><strong>帮我整理待办</strong><small>梳理优先级和下一步</small></button>
+            <button type="button" @click="prompt = '协助我准备接下来的会议'"><span>◷</span><strong>准备接下来的会议</strong><small>议程、资料和行动项</small></button>
+            <button type="button" @click="prompt = '分析项目资料并整理关键结论'"><span>⌕</span><strong>分析项目资料</strong><small>读取、检索和验证</small></button>
+            <button type="button" @click="prompt = '根据项目资料制作一份演示文稿'"><span>▣</span><strong>制作演示文稿</strong><small>PPT、Word、PDF、Excel</small></button>
           </div>
         </div>
 
@@ -606,26 +664,14 @@ onBeforeUnmount(() => {
               <header>
                 <strong>{{ message.role === 'user' ? '你' : 'MiniSwarm' }}</strong>
                 <span v-if="message.mode === 'revise'">修改文件</span>
+                <span v-else-if="message.mode === 'supervisor'">Supervisor</span>
                 <time>{{ new Date(message.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) }}</time>
               </header>
-              <MarkdownContent :content="message.content" />
+              <MarkdownContent :content="displayMessageContent(message.content)" />
               <div v-if="message.status === 'STREAMING'" class="streaming-cursor" aria-label="正在生成" />
               <span v-if="message.status === 'FAILED'" class="message-error">生成失败</span>
             </div>
           </article>
-
-          <details v-if="executionEvents.length" class="run-record" open>
-            <summary>
-              <span>运行记录</span>
-              <strong>{{ task?.progress || 0 }}%</strong>
-              <small>{{ activeAgentCount }} 个 Agent 活跃 · {{ task?.current_step || '等待中' }}</small>
-            </summary>
-            <ol>
-              <li v-for="event in executionEvents.slice(-10)" :key="event.id">
-                <i /><div><strong>{{ event.title }}</strong><small>{{ event.content }}</small></div>
-              </li>
-            </ol>
-          </details>
 
           <article v-for="approval in pendingApprovals" :key="approval.id" class="inline-approval">
             <span>需要你的批准</span>
@@ -657,8 +703,8 @@ onBeforeUnmount(() => {
       </button>
 
       <footer class="composer-dock">
-        <form class="workbench-composer" @submit.prevent="submit">
-          <div v-if="!task" class="project-select-row">
+        <form :class="['workbench-composer', { 'task-composer': task }]" @submit.prevent="submit">
+          <div v-if="!task && !projectPinnedByRoute" class="project-select-row">
             <select v-model="selectedProjectId" @change="loadProjectFiles">
               <option value="" disabled>选择项目</option>
               <option v-for="project in projects" :key="project.id" :value="project.id">{{ project.name }}</option>
@@ -666,10 +712,12 @@ onBeforeUnmount(() => {
             <span>{{ currentProject?.current_user_role || '未选择' }}</span>
           </div>
           <textarea
+            ref="composerTextarea"
             v-model="prompt"
             maxlength="20000"
             :disabled="submitting || !canWrite"
-            :placeholder="canWrite ? '要求后续变更…（Enter 发送，Shift+Enter 换行）' : '当前项目为只读权限'"
+            :placeholder="canWrite ? (task ? '输入消息' : '问问 MiniSwarm') : '当前项目为只读权限'"
+            @input="resizeComposerTextarea"
             @keydown="handleComposerKey"
           />
           <div v-if="attachments.length || selectedProjectFiles.length" class="attachment-chips">
@@ -694,30 +742,70 @@ onBeforeUnmount(() => {
           <div class="composer-toolbar">
             <div class="composer-left-actions">
               <label class="icon-button attach-button" title="添加附件">＋<input type="file" multiple @change="chooseAttachments" /></label>
-              <button class="icon-button" type="button" title="设置" @click="settingsOpen = !settingsOpen">⌘</button>
+              <button class="tools-settings-button" type="button" title="工具与设置" @click="settingsOpen = !settingsOpen">
+                <span>⌘</span>工具与设置
+              </button>
+              <button
+                type="button"
+                :class="['composer-option-pill', { active: thinkingEnabled }]"
+                :aria-pressed="thinkingEnabled"
+                @click="toggleThinking"
+              >
+                <span>◉</span>{{ thinkingEnabled ? '深度思考' : '思考' }}
+              </button>
+              <button
+                type="button"
+                :class="['composer-option-pill', { active: webSearchEnabled }]"
+                :aria-pressed="webSearchEnabled"
+                title="开启后，当前消息会发送给已配置的联网搜索服务"
+                @click="webSearchEnabled = !webSearchEnabled"
+              >
+                <span>⊙</span>{{ webSearchEnabled ? '智能搜索已开' : '智能搜索' }}
+              </button>
               <span v-if="selectedSkills.length" class="skill-count">{{ selectedSkills.length }} Skills</span>
-            </div>
-            <div class="mode-switch" role="radiogroup" aria-label="输入模式">
-              <button type="button" :class="{ active: mode === 'chat' }" @click="mode = 'chat'">聊天</button>
-              <button type="button" :class="{ active: mode === 'task' }" :disabled="running || Boolean(task && task.execution_kind !== 'chat')" @click="mode = 'task'">执行任务</button>
-              <button type="button" :class="{ active: mode === 'revise' }" :disabled="!terminal" @click="mode = 'revise'">修改文件</button>
             </div>
             <button v-if="running" class="cancel-generation" type="button" @click="requestCancel">停止</button>
             <span v-if="submitting && uploadTotal" class="upload-progress">上传 {{ uploadDone }}/{{ uploadTotal }}</span>
-            <button v-if="!running" class="send-button" type="submit" :disabled="submitting || !prompt.trim() || !canWrite" :aria-label="submitting ? '正在发送' : '发送'">{{ submitting ? '…' : '↑' }}</button>
+            <button class="send-button" type="submit" :disabled="submitting || !prompt.trim() || !canWrite" :aria-label="submitting ? '正在发送' : '发送'">{{ submitting ? '…' : '↑' }}</button>
           </div>
         </form>
         <small v-if="autonomyMode === 'yolo' && !task" class="yolo-warning">YOLO 仅对当前任务生效，删除、越界路径和宿主机操作仍会拦截。</small>
+        <small v-else-if="webSearchEnabled" class="composer-note">智能搜索已开启：发送时会把本条消息交给联网搜索服务，并记录来源。</small>
+        <small v-else class="composer-note">MiniSwarm 会自动判断聊天、执行任务或修改文件，也可能会出错。请核查重要信息。</small>
       </footer>
     </div>
 
     <div v-if="mobileContextOpen" class="drawer-backdrop" @click="mobileContextOpen = false" />
     <aside :class="['context-sidebar', { hidden: !rightOpen, mobileOpen: mobileContextOpen }]">
-      <header><strong>上下文</strong><button class="icon-button" type="button" @click="mobileContextOpen = false; rightOpen = false">×</button></header>
+      <header><strong>任务运行</strong><button class="icon-button" type="button" @click="mobileContextOpen = false; rightOpen = false">×</button></header>
       <div v-if="!task" class="context-empty">
         <span>☷</span><strong>任务上下文将在这里出现</strong><p>计划、Agents、文件、来源、审批和用量会实时更新。</p>
       </div>
       <template v-else>
+        <section class="live-run-panel">
+          <div class="live-run-heading">
+            <div><strong>运行记录</strong><span><i />实时</span></div>
+            <em>{{ task.progress }}%</em>
+          </div>
+          <div class="live-progress-track"><i :style="{ width: `${task.progress}%` }" /></div>
+          <p>{{ task.current_step || '等待中' }} · {{ activeAgentCount }} 个 Agent 活跃</p>
+          <ol ref="runLog" class="live-run-list">
+            <li v-if="!executionEvents.length" class="live-run-empty">暂无运行记录</li>
+            <li v-for="event in executionEvents" :key="event.id">
+              <i /><div><strong>{{ event.title }}</strong><small v-if="event.content">{{ event.content }}</small><time>{{ new Date(event.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }) }}</time></div>
+            </li>
+          </ol>
+        </section>
+        <details class="context-section supervisor-section" open>
+          <summary>Supervisor <em>v{{ supervision?.current_brief?.version || task.brief_version }}</em></summary>
+          <div class="supervisor-state">
+            <strong>{{ supervision?.status || task.supervisor_status }}</strong>
+            <small>{{ supervision?.current_brief?.change_summary || '等待运行中的新要求' }}</small>
+          </div>
+          <div v-for="item in (supervision?.directives || []).slice(0, 5)" :key="item.id" class="directive-row">
+            <span>{{ item.status }}</span><p>{{ item.summary || '正在分析…' }}</p>
+          </div>
+        </details>
         <details v-if="pendingApprovals.length" class="context-section approval-section" open>
           <summary>待审批 <em>{{ pendingApprovals.length }}</em></summary>
           <article v-for="item in pendingApprovals" :key="item.id">

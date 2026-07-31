@@ -23,7 +23,11 @@ const html = computed(() => {
   const escaped = escapeHtml(props.content || '')
   const codeBlocks: string[] = []
   const withoutCode = escaped.replace(/```([\w-]*)\n?([\s\S]*?)```/g, (_match, language, code) => {
-    const index = codeBlocks.push(`<pre><code data-language="${language || 'text'}">${code.trim()}</code></pre>`) - 1
+    const normalizedLanguage = language || 'text'
+    const index = codeBlocks.push(
+      `<div class="code-block"><div class="code-block-header"><span>${normalizedLanguage}</span></div>` +
+      `<pre><code data-language="${normalizedLanguage}">${code.replace(/^\n|\n$/g, '')}</code></pre></div>`,
+    ) - 1
     return `@@CODE_BLOCK_${index}@@`
   })
   const lines = withoutCode.split('\n')

@@ -13,7 +13,8 @@ MiniSwarm Web 是一个面向小团队（当前最多 3 个账号）的网页版
 - 聊天、执行任务、修改文件共用同一项目会话。
 - DeepSeek Planner 生成结构化 DAG，Orchestrator 选择单 Agent 或 Swarm。
 - 单任务最多 8 个工作 Agent，之后由 1 个只读 Reviewer 验收；全系统最多并发 12 个工作 Agent。
-- 每个 Agent 最多 20 轮模型/工具循环，单任务工具预算最多 100 次。
+- 每个 Agent 默认最多 30 轮模型/工具循环，单任务工具预算最多 180 次。
+- Supervisor 可在任务运行中接收新要求，并在模型或工具安全检查点合并到版本化 Task Brief，不取消当前任务。
 - 普通聊天只调用 1 个模型，不创建子 Agent。
 - 任务、消息、事件、文件、来源、审批、Token 用量和全局记忆持久化到 PostgreSQL。
 - SSE 支持断线补发；刷新页面不会丢失任务进度和聊天上下文。
@@ -96,7 +97,10 @@ api (FastAPI)
    +---------------- PostgreSQL（事实来源）
    +---------------- Redis（Celery、锁、实时通知）
    |
-   +-- worker-control（规划、DAG、Reviewer、交付门禁）
+   +-- worker-control（短事务、DAG、交付门禁）
+   +-- worker-planner（任务规划）
+   +-- worker-supervisor（运行中要求与 Brief）
+   +-- worker-chat（流式聊天）
    +-- worker-agent（Agent 工具循环）
    +-- worker-memory（归档记忆分析）
    |
@@ -110,7 +114,10 @@ Compose 中有 9 个服务：
 | --- | --- |
 | `frontend` | Vue 静态页面、API 反向代理、SSE 转发 |
 | `api` | 登录、项目、任务、文件、审批、记忆和 SSE |
-| `worker-control` | 规划、节点调度、返工、Reviewer、打包 |
+| `worker-control` | 节点调度、返工、交付门禁与恢复投递 |
+| `worker-planner` | 初始任务规划与 DAG 生成 |
+| `worker-supervisor` | 运行中要求分类、Brief 版本和检查点合并 |
+| `worker-chat` | 不阻塞调度的流式聊天 |
 | `worker-agent` | 执行单 Agent 和并行子 Agent |
 | `worker-memory` | 归档任务分析与记忆合并 |
 | `runner` | 受限工具执行与 Office 质量检查 |
@@ -322,12 +329,13 @@ Copy-Item .env.example .env
 MAX_USERS=3
 MAX_ACTIVE_TASKS=3
 MAX_ACTIVE_TASKS_PER_USER=1
-MAX_AGENTS_PER_TASK=8
-MAX_GLOBAL_AGENTS=12
+MAX_AGENTS_PER_TASK=12
+MAX_GLOBAL_AGENTS=16
+MAX_CONCURRENT_AGENTS_PER_TASK=8
 MAX_AGENT_DEPTH=1
-MAX_AGENT_ROUNDS=20
-MAX_REVIEW_RETRIES=2
-MAX_TOOL_CALLS_PER_TASK=100
+MAX_AGENT_ROUNDS=30
+MAX_REVIEW_RETRIES=3
+MAX_TOOL_CALLS_PER_TASK=180
 TASK_TIMEOUT_MINUTES=45
 AGENT_TIMEOUT_MINUTES=20
 ```

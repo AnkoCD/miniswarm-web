@@ -187,6 +187,8 @@ class Task(Base):
     cancel_requested: Mapped[bool] = mapped_column(Boolean, default=False)
     review_retries: Mapped[int] = mapped_column(Integer, default=0)
     current_revision: Mapped[int] = mapped_column(Integer, default=0)
+    brief_version: Mapped[int] = mapped_column(Integer, default=1)
+    supervisor_status: Mapped[str] = mapped_column(String(24), default="IDLE")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -239,6 +241,43 @@ class TaskMessage(Base):
     task: Mapped[Task] = relationship(back_populates="messages")
 
 
+class TaskDirective(Base):
+    __tablename__ = "task_directives"
+    __table_args__ = (
+        Index("ix_task_directives_task_status", "task_id", "status"),
+        Index("ux_task_directives_message", "message_id", unique=True),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    task_id: Mapped[str] = mapped_column(ForeignKey("tasks.id", ondelete="CASCADE"), index=True)
+    message_id: Mapped[str] = mapped_column(ForeignKey("task_messages.id", ondelete="CASCADE"), index=True)
+    status: Mapped[str] = mapped_column(String(32), default="PENDING")
+    kind: Mapped[str] = mapped_column(String(24), default="unknown")
+    summary: Mapped[str] = mapped_column(Text, default="")
+    affected_node_keys: Mapped[list[str]] = mapped_column(JSON, default=list)
+    requires_replan: Mapped[bool] = mapped_column(Boolean, default=False)
+    applied_brief_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    processed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class TaskBriefVersion(Base):
+    __tablename__ = "task_brief_versions"
+    __table_args__ = (Index("ux_task_brief_task_version", "task_id", "version", unique=True),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    task_id: Mapped[str] = mapped_column(ForeignKey("tasks.id", ondelete="CASCADE"), index=True)
+    version: Mapped[int] = mapped_column(Integer)
+    goal: Mapped[str] = mapped_column(Text)
+    acceptance_criteria: Mapped[list[str]] = mapped_column(JSON, default=list)
+    change_summary: Mapped[str] = mapped_column(Text, default="")
+    source_directive_id: Mapped[str | None] = mapped_column(
+        ForeignKey("task_directives.id", ondelete="SET NULL"), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
 class TaskNode(Base):
     __tablename__ = "task_nodes"
     __table_args__ = (Index("ix_task_nodes_task_status", "task_id", "status"),)
@@ -255,6 +294,8 @@ class TaskNode(Base):
     status: Mapped[NodeStatus] = mapped_column(Enum(NodeStatus), default=NodeStatus.PENDING)
     attempt: Mapped[int] = mapped_column(Integer, default=0)
     result_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    target_brief_version: Mapped[int] = mapped_column(Integer, default=1)
+    applied_brief_version: Mapped[int] = mapped_column(Integer, default=1)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -320,6 +361,7 @@ class Artifact(Base):
     preview_kind: Mapped[str] = mapped_column(String(24), default="download")
     inspection_status: Mapped[str] = mapped_column(String(24), default="PENDING")
     preview_metadata: Mapped[dict] = mapped_column(JSON, default=dict)
+    brief_version: Mapped[int] = mapped_column(Integer, default=1)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 

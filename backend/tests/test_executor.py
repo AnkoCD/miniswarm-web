@@ -14,8 +14,11 @@ class FakeModel:
 
     def chat(self, **kwargs):
         self.calls.append(kwargs)
+        message = next(self.messages)
+        if isinstance(message, ChatResult):
+            return message
         return ChatResult(
-            message=next(self.messages),
+            message=message,
             usage=ModelUsage(prompt_tokens=10, completion_tokens=5, cache_hit_tokens=0, duration_ms=1),
         )
 
@@ -235,6 +238,7 @@ def test_executor_uses_task_model_and_thinking_choice(tmp_path):
         assert outcome.status == "succeeded"
         assert model.calls[0]["model"] == "deepseek-v4-flash"
         assert model.calls[0]["thinking"] is True
+        assert model.calls[0]["max_tokens"] is None
 
 
 def test_executor_injects_installed_ppt_skill(tmp_path):

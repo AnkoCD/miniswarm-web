@@ -1,5 +1,5 @@
 import axios from 'axios'
-import type { Approval, ArchivedTask, Artifact, ArtifactPreview, MemoryExtraction, Project, ProjectFile, ProjectMember, ProjectMemoryBundle, ProjectRole, SearchItem, Skill, SkillInstallResult, SystemConfig, Task, TaskEvent, TaskMessage, TaskNode, TaskSource, ToolCall, UsageSummary, User, UserMemory, UserMemoryProfile, UserRole, WorkerStatus } from './types'
+import type { Approval, ArchivedTask, Artifact, ArtifactPreview, MemoryExtraction, Project, ProjectFile, ProjectMember, ProjectMemoryBundle, ProjectRole, SearchItem, Skill, SkillInstallResult, SkillRemoveResult, SystemConfig, Task, TaskEvent, TaskMessage, TaskNode, TaskSource, TaskSupervision, ToolCall, UsageSummary, User, UserMemory, UserMemoryProfile, UserRole, WorkerStatus } from './types'
 
 export const api = axios.create({
   baseURL: '/api',
@@ -97,6 +97,11 @@ export async function installSkill(url: string): Promise<SkillInstallResult> {
   return data
 }
 
+export async function removeSkill(name: string): Promise<SkillRemoveResult> {
+  const { data } = await api.delete<SkillRemoveResult>(`/skills/${encodeURIComponent(name)}`)
+  return data
+}
+
 export async function createTask(payload: {
   prompt: string
   title?: string
@@ -109,8 +114,9 @@ export async function createTask(payload: {
   start_immediately?: boolean
   project_id?: string
   project_file_ids?: string[]
-  execution_kind?: 'chat' | 'task' | 'revision'
+  execution_kind?: 'auto' | 'chat' | 'task' | 'revision'
   client_request_id?: string
+  web_search?: boolean
 }): Promise<Task> {
   const { data } = await api.post<Task>('/tasks', payload)
   return data
@@ -128,8 +134,10 @@ export async function startTask(id: string): Promise<Task> {
   return data
 }
 
-export async function startChat(id: string): Promise<Task> {
-  const { data } = await api.post<Task>(`/tasks/${id}/chat-start`)
+export async function startChat(id: string, webSearch = false): Promise<Task> {
+  const { data } = await api.post<Task>(`/tasks/${id}/chat-start`, undefined, {
+    params: { web_search: webSearch },
+  })
   return data
 }
 
@@ -143,16 +151,24 @@ export async function listTaskMessages(id: string): Promise<TaskMessage[]> {
   return data
 }
 
+export async function getTaskSupervision(id: string): Promise<TaskSupervision> {
+  const { data } = await api.get<TaskSupervision>(`/tasks/${id}/supervision`)
+  return data
+}
+
 export async function sendTaskMessage(
   id: string,
   content: string,
-  mode: 'chat' | 'revise' | 'task',
+  mode: 'auto' | 'chat' | 'revise' | 'task',
   clientMessageId?: string,
+  options?: { executionMode?: 'standard' | 'deep'; webSearch?: boolean },
 ): Promise<TaskMessage> {
   const { data } = await api.post<TaskMessage>(`/tasks/${id}/messages`, {
     content,
     mode,
     client_message_id: clientMessageId,
+    execution_mode: options?.executionMode,
+    web_search: options?.webSearch || false,
   })
   return data
 }

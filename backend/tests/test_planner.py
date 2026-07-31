@@ -16,6 +16,34 @@ def settings() -> Settings:
     )
 
 
+def test_client_omits_max_tokens_when_not_requested():
+    def handler(request: httpx.Request):
+        body = json.loads(request.content)
+        assert "max_tokens" not in body
+        return httpx.Response(
+            200,
+            json={
+                "choices": [{
+                    "message": {"role": "assistant", "content": "ok"},
+                    "finish_reason": "stop",
+                }],
+                "usage": {"prompt_tokens": 10, "completion_tokens": 2},
+            },
+        )
+
+    result = DeepSeekClient(
+        settings(),
+        transport=httpx.MockTransport(handler),
+    ).chat(
+        model="deepseek-v4-flash",
+        messages=[{"role": "user", "content": "test"}],
+        thinking=False,
+        max_tokens=None,
+    )
+    assert result.message["content"] == "ok"
+    assert result.finish_reason == "stop"
+
+
 def test_planner_accepts_valid_dag():
     plan_json = {
         "mode": "swarm",
