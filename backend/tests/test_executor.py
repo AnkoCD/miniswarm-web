@@ -101,6 +101,8 @@ def test_executor_runs_tool_then_finishes(tmp_path):
         call = db.query(ToolCall).filter_by(task_id=task.id).one()
         assert call.status == ToolCallStatus.SUCCEEDED
         assert len(runner.calls) == 1
+        assert model.calls[0]["reasoning_mode"] == "auto"
+        assert model.calls[1]["reasoning_mode"] == "direct"
 
 
 def test_executor_pauses_for_risky_tool(tmp_path):

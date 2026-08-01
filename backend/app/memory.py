@@ -7,7 +7,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.agent.deepseek import ChatResult, DeepSeekClient, DeepSeekError
+from app.mini_tot import ChatResult, MiniTotError, MiniTotGateway
 from app.core.config import Settings, get_settings
 from app.models import (
     Artifact,
@@ -92,6 +92,8 @@ def build_archive_digest(db: Session, task: Task) -> str:
         f"type:{task.task_type}",
         f"model:{task.model_mode}",
         f"execution:{task.execution_mode}",
+        f"reasoning_mode:{task.reasoning_mode}",
+        f"reasoning_effort:{task.reasoning_effort}",
         f"autonomy:{task.autonomy_mode}",
         "messages:",
     ]
@@ -111,11 +113,11 @@ def analyze_archive(
     db: Session,
     task: Task,
     *,
-    client: DeepSeekClient | None = None,
+    client: MiniTotGateway | None = None,
     settings: Settings | None = None,
 ) -> tuple[MemoryAnalysis, ChatResult]:
     settings = settings or get_settings()
-    result = (client or DeepSeekClient(settings)).chat(
+    result = (client or MiniTotGateway(settings)).chat(
         model=settings.model_memory,
         messages=[
             {"role": "system", "content": MEMORY_SYSTEM_PROMPT},
@@ -124,14 +126,17 @@ def analyze_archive(
         thinking=True,
         response_format={"type": "json_object"},
         max_tokens=4_000,
+        reasoning_mode="direct",
+        reasoning_effort="medium",
+        reasoning_purpose="memory",
     )
     content = result.message.get("content")
     if not isinstance(content, str) or not content.strip():
-        raise DeepSeekError("归档记忆分析返回了空内容")
+        raise MiniTotError("归档记忆分析返回了空内容")
     try:
         return MemoryAnalysis.model_validate(json.loads(content)), result
     except (json.JSONDecodeError, ValueError) as exc:
-        raise DeepSeekError("归档记忆分析结果不符合约定") from exc
+        raise MiniTotError("归档记忆分析结果不符合约定") from exc
 
 
 def _snapshot(memory: UserMemory) -> dict:

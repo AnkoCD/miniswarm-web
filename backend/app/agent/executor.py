@@ -10,7 +10,7 @@ from typing import Literal
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.agent.deepseek import DeepSeekClient, DeepSeekError, resolve_task_model
+from app.mini_tot import MiniTotError, MiniTotGateway, resolve_task_model
 from app.agent.agent_context import isolated_agent_context
 from app.agent.agent_scope import (
     AgentScopeError,
@@ -93,12 +93,12 @@ pass 仅用于要求全部满足、所有最终文件真实存在且逐一检查
 class AgentExecutor:
     def __init__(
         self,
-        model_client: DeepSeekClient | None = None,
+        model_client: MiniTotGateway | None = None,
         runner_client: RunnerClient | None = None,
         settings: Settings | None = None,
     ) -> None:
         self.settings = settings or get_settings()
-        self.model = model_client or DeepSeekClient(self.settings)
+        self.model = model_client or MiniTotGateway(self.settings)
         self.runner = runner_client or RunnerClient(self.settings)
         self.skill_manager = SkillManagerClient(self.settings)
 
@@ -265,6 +265,18 @@ class AgentExecutor:
                 return ExecutionOutcome("failed", "任务已取消")
             self._apply_brief_updates(db, task, node, messages)
             try:
+                if node.role == "reviewer" and _round == 0:
+                    round_reasoning_mode = task.reasoning_mode
+                    reasoning_purpose = "reviewer"
+                elif _round == 0:
+                    round_reasoning_mode = task.reasoning_mode
+                    reasoning_purpose = "worker"
+                else:
+                    # The first decision gets the selected MiniTot strategy;
+                    # ordinary tool-result turns stay direct to prevent an
+                    # entire thought tree from running on every tool call.
+                    round_reasoning_mode = "direct"
+                    reasoning_purpose = "reviewer" if node.role == "reviewer" else "worker"
                 result = self.model.chat(
                     model=model_name,
                     messages=messages,
@@ -272,8 +284,11 @@ class AgentExecutor:
                     tools=tools,
                     response_format={"type": "json_object"} if node.role == "reviewer" else None,
                     max_tokens=None,
+                    reasoning_mode=round_reasoning_mode,
+                    reasoning_effort=task.reasoning_effort,
+                    reasoning_purpose=reasoning_purpose,
                 )
-            except DeepSeekError as exc:
+            except MiniTotError as exc:
                 node.status = NodeStatus.FAILED
                 node.result_summary = str(exc)
                 node.completed_at = datetime.now(UTC)

@@ -33,6 +33,13 @@ class Settings(BaseSettings):
     model_memory: str = "deepseek-v4-pro"
     deepseek_timeout_seconds: int = 120
     planner_max_tokens: int = 8_000
+    minitot_max_retries: int = 2
+    minitot_retry_delay_seconds: float = 0.75
+    max_reasoning_parallel_calls: int = 3
+    max_reasoning_calls_fast: int = 5
+    max_reasoning_calls_medium: int = 10
+    max_reasoning_calls_high: int = 18
+    minitot_branch_context_chars: int = 6_000
     runner_url: str = "http://runner:8100"
     runner_shared_secret: str = "development-runner-secret-change-me"
     skill_manager_url: str = "http://skill-manager:8200"

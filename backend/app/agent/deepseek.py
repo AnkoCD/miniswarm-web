@@ -212,3 +212,21 @@ class DeepSeekClient:
                 duration_ms=int((perf_counter() - started) * 1000),
             ),
         )
+
+
+# Backward-compatible import surface for third-party extensions and older
+# tests. MiniSwarm business modules now import app.mini_tot directly; these
+# aliases ensure legacy callers also execute through the new sole gateway.
+from app.mini_tot.gateway import (  # noqa: E402
+    ChatDelta as _MiniTotChatDelta,
+    ChatResult as _MiniTotChatResult,
+    MiniTotError as _MiniTotError,
+    MiniTotGateway as _MiniTotGateway,
+    ModelUsage as _MiniTotModelUsage,
+)
+
+DeepSeekClient = _MiniTotGateway
+DeepSeekError = _MiniTotError
+ModelUsage = _MiniTotModelUsage
+ChatResult = _MiniTotChatResult
+ChatDelta = _MiniTotChatDelta

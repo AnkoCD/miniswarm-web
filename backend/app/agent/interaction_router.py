@@ -3,7 +3,7 @@ import re
 from dataclasses import dataclass
 from typing import Literal
 
-from app.agent.deepseek import DeepSeekClient, DeepSeekError, ModelUsage, resolve_task_model
+from app.mini_tot import MiniTotError, MiniTotGateway, ModelUsage, resolve_task_model
 from app.core.config import Settings, get_settings
 from app.models import Task, TaskStatus
 
@@ -58,7 +58,7 @@ def resolve_interaction_mode(
     task: Task | None = None,
     model_mode: str = "auto",
     settings: Settings | None = None,
-    client: DeepSeekClient | None = None,
+    client: MiniTotGateway | None = None,
 ) -> InteractionRoute:
     if requested in {"chat", "task", "revise"}:
         return InteractionRoute(mode=requested, source="requested")
@@ -76,7 +76,7 @@ def resolve_interaction_mode(
         )
     )
     try:
-        result = (client or DeepSeekClient(settings)).chat(
+        result = (client or MiniTotGateway(settings)).chat(
             model=model,
             messages=[
                 {
@@ -97,11 +97,14 @@ def resolve_interaction_mode(
             thinking=False,
             response_format={"type": "json_object"},
             max_tokens=80,
+            reasoning_mode="direct",
+            reasoning_effort="fast",
+            reasoning_purpose="router",
         )
         payload = json.loads(str(result.message.get("content") or "{}"))
         mode = str(payload.get("mode") or "")
         if mode in allowed:
             return InteractionRoute(mode=mode, usage=result.usage, source="model")
-    except (DeepSeekError, ValueError, TypeError):
+    except (MiniTotError, ValueError, TypeError):
         pass
     return InteractionRoute(mode=_fallback_mode(prompt, allowed), source="fallback")

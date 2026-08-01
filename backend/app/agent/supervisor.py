@@ -3,7 +3,7 @@ import re
 
 from pydantic import BaseModel, Field
 
-from app.agent.deepseek import ChatResult, DeepSeekClient, DeepSeekError
+from app.mini_tot import ChatResult, MiniTotError, MiniTotGateway
 from app.core.config import Settings, get_settings
 
 
@@ -22,9 +22,9 @@ chat：询问进度、解释结果或普通讨论；directive：新增、删除�
 
 
 class Supervisor:
-    def __init__(self, client: DeepSeekClient | None = None, settings: Settings | None = None):
+    def __init__(self, client: MiniTotGateway | None = None, settings: Settings | None = None):
         self.settings = settings or get_settings()
-        self.client = client or DeepSeekClient(self.settings)
+        self.client = client or MiniTotGateway(self.settings)
 
     def analyze(
         self,
@@ -33,8 +33,12 @@ class Supervisor:
         brief: str,
         nodes: list[dict],
         deep: bool,
+        reasoning_mode: str | None = None,
+        reasoning_effort: str | None = None,
     ) -> tuple[SupervisorDecision, ChatResult | None]:
         node_keys = {str(item.get("key")) for item in nodes}
+        resolved_reasoning_mode = reasoning_mode if reasoning_mode is not None else "direct"
+        resolved_reasoning_effort = reasoning_effort or ("high" if deep else "fast")
         try:
             result = self.client.chat(
                 model=self.settings.model_orchestrator,
@@ -52,11 +56,14 @@ class Supervisor:
                 thinking=deep,
                 response_format={"type": "json_object"},
                 max_tokens=None,
+                reasoning_mode=resolved_reasoning_mode,
+                reasoning_effort=resolved_reasoning_effort,
+                reasoning_purpose="supervisor",
             )
             decision = SupervisorDecision.model_validate_json(str(result.message.get("content") or "{}"))
             decision.affected_node_keys = [key for key in decision.affected_node_keys if key in node_keys]
             return decision, result
-        except (DeepSeekError, ValueError, TypeError):
+        except (MiniTotError, ValueError, TypeError):
             return self._fallback(content, nodes), None
 
     @staticmethod

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { showFailToast } from 'vant'
 import { apiErrorMessage, createTask, deleteTask, listSkills, listTasks, startTask, uploadTaskFile } from '../api'
@@ -9,7 +9,11 @@ const tasks = ref<Task[]>([])
 const prompt = ref('')
 const taskType = ref('auto')
 const modelMode = ref('auto')
-const executionMode = ref('standard')
+const reasoningMode = ref<'auto' | 'direct' | 'normal' | 'critical' | 'bfs' | 'dfs'>('auto')
+const reasoningEffort = ref<'smart' | 'fast' | 'medium' | 'high'>('smart')
+const executionMode = computed(() =>
+  reasoningEffort.value === 'medium' || reasoningEffort.value === 'high' ? 'deep' : 'standard',
+)
 const autonomyMode = ref('safe')
 const skillMode = ref<'auto' | 'manual' | 'off'>('auto')
 const selectedSkills = ref<string[]>([])
@@ -53,6 +57,8 @@ async function submit() {
       task_type: taskType.value,
       model_mode: modelMode.value,
       execution_mode: executionMode.value,
+      reasoning_mode: reasoningMode.value,
+      reasoning_effort: reasoningEffort.value,
       autonomy_mode: autonomyMode.value,
       skill_mode: skillMode.value,
       selected_skills: selectedSkills.value,
@@ -126,10 +132,23 @@ onMounted(refresh)
           </select>
         </label>
         <label>
-          <span>深度思考</span>
-          <select v-model="executionMode">
-            <option value="standard">关闭（速度更快）</option>
-            <option value="deep">开启（质量优先）</option>
+          <span>推理模式</span>
+          <select v-model="reasoningMode">
+            <option value="auto">智能选择</option>
+            <option value="direct">直接回答</option>
+            <option value="normal">常规推理</option>
+            <option value="critical">批判推理</option>
+            <option value="bfs">广度优先</option>
+            <option value="dfs">深度优先</option>
+          </select>
+        </label>
+        <label>
+          <span>推理强度</span>
+          <select v-model="reasoningEffort">
+            <option value="smart">智能</option>
+            <option value="fast">极速</option>
+            <option value="medium">中</option>
+            <option value="high">高</option>
           </select>
         </label>
         <label>

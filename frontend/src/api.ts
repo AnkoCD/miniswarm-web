@@ -108,6 +108,8 @@ export async function createTask(payload: {
   task_type: string
   model_mode: string
   execution_mode: string
+  reasoning_mode?: 'auto' | 'direct' | 'normal' | 'critical' | 'bfs' | 'dfs'
+  reasoning_effort?: 'smart' | 'fast' | 'medium' | 'high'
   autonomy_mode: string
   skill_mode: 'auto' | 'manual' | 'off'
   selected_skills: string[]
@@ -161,13 +163,20 @@ export async function sendTaskMessage(
   content: string,
   mode: 'auto' | 'chat' | 'revise' | 'task',
   clientMessageId?: string,
-  options?: { executionMode?: 'standard' | 'deep'; webSearch?: boolean },
+  options?: {
+    executionMode?: 'standard' | 'deep'
+    reasoningMode?: 'auto' | 'direct' | 'normal' | 'critical' | 'bfs' | 'dfs'
+    reasoningEffort?: 'smart' | 'fast' | 'medium' | 'high'
+    webSearch?: boolean
+  },
 ): Promise<TaskMessage> {
   const { data } = await api.post<TaskMessage>(`/tasks/${id}/messages`, {
     content,
     mode,
     client_message_id: clientMessageId,
     execution_mode: options?.executionMode,
+    reasoning_mode: options?.reasoningMode,
+    reasoning_effort: options?.reasoningEffort,
     web_search: options?.webSearch || false,
   })
   return data

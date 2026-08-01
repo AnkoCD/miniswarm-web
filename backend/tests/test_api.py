@@ -38,6 +38,8 @@ def test_create_task_and_replay_events(authenticated_client):
     assert task["status"] == "QUEUED"
     assert task["model_mode"] == "deepseek-v4-pro"
     assert task["execution_mode"] == "deep"
+    assert task["reasoning_mode"] == "auto"
+    assert task["reasoning_effort"] == "high"
     assert task["autonomy_mode"] == "yolo"
     assert task["skill_mode"] == "auto"
     assert task["selected_skills"] == []
@@ -59,6 +61,26 @@ def test_create_task_accepts_one_character_prompt(authenticated_client):
     )
     assert created.status_code == 201
     assert created.json()["prompt"] == "好"
+
+
+def test_create_task_accepts_minitot_reasoning_profile(authenticated_client):
+    created = authenticated_client.post(
+        "/api/tasks",
+        json={
+            "prompt": "审查这个方案",
+            "reasoning_mode": "critical",
+            "reasoning_effort": "medium",
+            "start_immediately": False,
+        },
+    )
+    assert created.status_code == 201
+    task = created.json()
+    assert task["reasoning_mode"] == "critical"
+    assert task["reasoning_effort"] == "medium"
+    assert task["execution_mode"] == "deep"
+    messages = authenticated_client.get(f"/api/tasks/{task['id']}/messages").json()
+    assert messages[0]["reasoning_mode"] == "critical"
+    assert messages[0]["reasoning_effort"] == "medium"
 
 
 def test_unknown_skill_and_empty_manual_selection_are_rejected(authenticated_client):

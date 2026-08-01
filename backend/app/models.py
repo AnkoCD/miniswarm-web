@@ -176,6 +176,8 @@ class Task(Base):
     prompt: Mapped[str] = mapped_column(Text)
     task_type: Mapped[str] = mapped_column(String(32), default="auto")
     execution_mode: Mapped[str] = mapped_column(String(32), default="standard")
+    reasoning_mode: Mapped[str] = mapped_column(String(32), default="auto")
+    reasoning_effort: Mapped[str] = mapped_column(String(32), default="smart")
     autonomy_mode: Mapped[str] = mapped_column(String(32), default="safe")
     model_mode: Mapped[str] = mapped_column(String(32), default="auto")
     skill_mode: Mapped[str] = mapped_column(String(16), default="auto")
@@ -236,6 +238,8 @@ class TaskMessage(Base):
     )
     status: Mapped[str] = mapped_column(String(24), default="COMPLETED")
     client_message_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    reasoning_mode: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    reasoning_effort: Mapped[str | None] = mapped_column(String(32), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
     task: Mapped[Task] = relationship(back_populates="messages")

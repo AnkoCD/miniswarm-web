@@ -5,7 +5,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, model_validator
 
-from app.agent.deepseek import ChatResult, DeepSeekClient, DeepSeekError
+from app.mini_tot import ChatResult, MiniTotError, MiniTotGateway
 from app.agent.deliverables import detect_multi_deliverable_request
 from app.core.config import Settings, get_settings
 
@@ -101,9 +101,9 @@ DOCX、XLSX、PPTX、PDF 的 acceptance_criteria 必须包含：真实目标格�
 
 
 class Planner:
-    def __init__(self, client: DeepSeekClient | None = None, settings: Settings | None = None):
+    def __init__(self, client: MiniTotGateway | None = None, settings: Settings | None = None):
         self.settings = settings or get_settings()
-        self.client = client or DeepSeekClient(self.settings)
+        self.client = client or MiniTotGateway(self.settings)
 
     def create_plan(
         self,
@@ -111,7 +111,13 @@ class Planner:
         *,
         deep: bool = False,
         model: str | None = None,
+        reasoning_mode: str | None = None,
+        reasoning_effort: str | None = None,
     ) -> tuple[TaskPlan, ChatResult]:
+        # Pre-MiniTot callers do not provide a profile. Keep those calls
+        # single-shot; persisted tasks always pass the new explicit fields.
+        resolved_reasoning_mode = reasoning_mode if reasoning_mode is not None else "direct"
+        resolved_reasoning_effort = reasoning_effort or ("high" if deep else "fast")
         result = self.client.chat(
             model=model or self.settings.model_orchestrator,
             messages=[
@@ -121,14 +127,17 @@ class Planner:
             thinking=deep,
             response_format={"type": "json_object"},
             max_tokens=self.settings.planner_max_tokens,
+            reasoning_mode=resolved_reasoning_mode,
+            reasoning_effort=resolved_reasoning_effort,
+            reasoning_purpose="planner",
         )
         content = result.message.get("content")
         if not isinstance(content, str) or not content.strip():
-            raise DeepSeekError("规划器返回了空内容")
+            raise MiniTotError("规划器返回了空内容")
         try:
             plan = TaskPlan.model_validate(json.loads(content))
         except (json.JSONDecodeError, ValueError) as exc:
-            raise DeepSeekError("规划器返回的计划不符合约定") from exc
+            raise MiniTotError("规划器返回的计划不符合约定") from exc
         self._normalize_office_roles(prompt, plan)
         self._expand_multi_deliverables(prompt, plan)
         # Mutations above intentionally rewrite the model-produced DAG. Re-run
@@ -136,12 +145,12 @@ class Planner:
         try:
             plan = TaskPlan.model_validate(plan.model_dump())
         except ValueError as exc:
-            raise DeepSeekError("多交付物拆分后的计划不符合约定") from exc
+            raise MiniTotError("多交付物拆分后的计划不符合约定") from exc
         worker_count = sum(node.role != "reviewer" for node in plan.nodes)
         if worker_count > self.settings.max_agents_per_task:
-            raise DeepSeekError("规划器创建的 Agent 数量超过系统限制")
+            raise MiniTotError("规划器创建的 Agent 数量超过系统限制")
         if plan.nodes[-1].role != "reviewer":
-            raise DeepSeekError("计划必须以 Reviewer 节点结束")
+            raise MiniTotError("计划必须以 Reviewer 节点结束")
         return plan, result
 
     @staticmethod

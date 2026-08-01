@@ -50,9 +50,14 @@ import type {
 
 const COMPOSER_PREFERENCES_KEY = 'miniswarm:composer-preferences'
 
+type ReasoningMode = 'auto' | 'direct' | 'normal' | 'critical' | 'bfs' | 'dfs'
+type ReasoningEffort = 'smart' | 'fast' | 'medium' | 'high'
+
 type ComposerPreferences = {
   modelMode?: string
   executionMode?: string
+  reasoningMode?: ReasoningMode
+  reasoningEffort?: ReasoningEffort
   autonomyMode?: string
   webSearchEnabled?: boolean
   taskType?: string
@@ -90,7 +95,20 @@ const skillMode = ref<'auto' | 'manual' | 'off'>('auto')
 const prompt = ref('')
 const attachments = ref<File[]>([])
 const modelMode = ref('auto')
-const executionMode = ref(initialComposerPreferences.executionMode === 'deep' ? 'deep' : 'standard')
+const reasoningMode = ref<ReasoningMode>(
+  initialComposerPreferences.reasoningMode
+    || (initialComposerPreferences.executionMode === 'deep'
+      ? 'auto'
+      : initialComposerPreferences.executionMode === 'standard' ? 'direct' : 'auto'),
+)
+const reasoningEffort = ref<ReasoningEffort>(
+  initialComposerPreferences.reasoningEffort
+    || (initialComposerPreferences.executionMode === 'deep'
+      ? 'high'
+      : initialComposerPreferences.executionMode === 'standard' ? 'fast' : 'smart'),
+)
+const reasoningMenuOpen = ref(false)
+const reasoningSubmenuOpen = ref(false)
 const webSearchEnabled = ref(initialComposerPreferences.webSearchEnabled === true)
 const autonomyMode = ref('safe')
 const taskType = ref('auto')
@@ -141,7 +159,30 @@ const isWebDesignTask = computed(() => {
 })
 const draftKey = computed(() => `miniswarm:composer-draft:${taskId.value || 'new'}`)
 const attachmentTotalSize = computed(() => attachments.value.reduce((sum, file) => sum + file.size, 0))
-const thinkingEnabled = computed(() => executionMode.value === 'deep')
+const executionMode = computed<'standard' | 'deep'>(() => (
+  ['medium', 'high'].includes(reasoningEffort.value) ? 'deep' : 'standard'
+))
+const reasoningActive = computed(() => reasoningMode.value !== 'direct' || reasoningEffort.value !== 'fast')
+const reasoningEffortLabel = computed(() => ({
+  smart: '智能', fast: '极速', medium: '中', high: '高',
+}[reasoningEffort.value]))
+const reasoningModeLabel = computed(() => ({
+  auto: '智能选择', direct: '直接回答', normal: '发散思考', critical: '批判思考', bfs: '宽度优先', dfs: '深度优先',
+}[reasoningMode.value]))
+const reasoningEfforts: Array<{ value: ReasoningEffort; label: string }> = [
+  { value: 'smart', label: '智能' },
+  { value: 'fast', label: '极速' },
+  { value: 'medium', label: '中' },
+  { value: 'high', label: '高' },
+]
+const reasoningModes: Array<{ value: ReasoningMode; label: string }> = [
+  { value: 'auto', label: '智能选择' },
+  { value: 'direct', label: '直接回答' },
+  { value: 'normal', label: '发散思考' },
+  { value: 'critical', label: '批判思考' },
+  { value: 'bfs', label: '宽度优先' },
+  { value: 'dfs', label: '深度优先' },
+]
 
 const WEB_SEARCH_DIRECTIVE = '【联网检索】请使用可用的联网搜索工具核对最新信息，并在结论中保留可追溯来源。'
 
@@ -171,8 +212,21 @@ function displayMessageContent(content: string) {
     : content
 }
 
-function toggleThinking() {
-  executionMode.value = thinkingEnabled.value ? 'standard' : 'deep'
+function selectReasoningEffort(value: ReasoningEffort) {
+  reasoningEffort.value = value
+  reasoningMenuOpen.value = false
+  reasoningSubmenuOpen.value = false
+}
+
+function selectReasoningMode(value: ReasoningMode) {
+  reasoningMode.value = value
+  reasoningMenuOpen.value = false
+  reasoningSubmenuOpen.value = false
+}
+
+function closeReasoningMenu() {
+  reasoningMenuOpen.value = false
+  reasoningSubmenuOpen.value = false
 }
 
 function isNearBottom() {
@@ -197,7 +251,14 @@ function restoreComposerState() {
   try {
     const preferences = readComposerPreferences()
     modelMode.value = preferences.modelMode || modelMode.value
-    executionMode.value = preferences.executionMode === 'deep' ? 'deep' : 'standard'
+    reasoningMode.value = preferences.reasoningMode
+      || (preferences.executionMode === 'deep'
+        ? 'auto'
+        : preferences.executionMode === 'standard' ? 'direct' : 'auto')
+    reasoningEffort.value = preferences.reasoningEffort
+      || (preferences.executionMode === 'deep'
+        ? 'high'
+        : preferences.executionMode === 'standard' ? 'fast' : 'smart')
     autonomyMode.value = preferences.autonomyMode || autonomyMode.value
     webSearchEnabled.value = Boolean(preferences.webSearchEnabled)
     taskType.value = preferences.taskType || taskType.value
@@ -371,6 +432,8 @@ function applyStreamMessage(type: string, raw: any) {
       author_user_id: null,
       status: 'STREAMING',
       client_message_id: null,
+      reasoning_mode: task.value?.reasoning_mode || reasoningMode.value,
+      reasoning_effort: task.value?.reasoning_effort || reasoningEffort.value,
       created_at: new Date().toISOString(),
     }
     messages.value.push(message)
@@ -441,6 +504,8 @@ async function submit() {
     if (task.value) {
       await sendTaskMessage(task.value.id, content, 'auto', uuid(), {
         executionMode: executionMode.value === 'deep' ? 'deep' : 'standard',
+        reasoningMode: reasoningMode.value,
+        reasoningEffort: reasoningEffort.value,
         webSearch: webSearchEnabled.value,
       })
       prompt.value = ''
@@ -458,6 +523,8 @@ async function submit() {
         task_type: taskType.value,
         model_mode: modelMode.value,
         execution_mode: executionMode.value,
+        reasoning_mode: reasoningMode.value,
+        reasoning_effort: reasoningEffort.value,
         autonomy_mode: autonomyMode.value,
         skill_mode: skillMode.value,
         selected_skills: selectedSkills.value,
@@ -604,10 +671,12 @@ watch(prompt, value => {
   resizeComposerTextarea()
 })
 
-watch([modelMode, executionMode, webSearchEnabled, autonomyMode, taskType, skillMode, selectedSkills], () => {
+watch([modelMode, reasoningMode, reasoningEffort, webSearchEnabled, autonomyMode, taskType, skillMode, selectedSkills], () => {
   localStorage.setItem(COMPOSER_PREFERENCES_KEY, JSON.stringify({
     modelMode: modelMode.value,
     executionMode: executionMode.value,
+    reasoningMode: reasoningMode.value,
+    reasoningEffort: reasoningEffort.value,
     autonomyMode: autonomyMode.value,
     webSearchEnabled: webSearchEnabled.value,
     taskType: taskType.value,
@@ -627,6 +696,7 @@ onMounted(() => {
   window.addEventListener('miniswarm:toggle-right', toggleRight)
   window.addEventListener('miniswarm:show-files', openFilesOnMobile)
   window.addEventListener('miniswarm:escape', escapePanels)
+  window.addEventListener('click', closeReasoningMenu)
 })
 onBeforeUnmount(() => {
   stream?.close()
@@ -634,6 +704,7 @@ onBeforeUnmount(() => {
   window.removeEventListener('miniswarm:toggle-right', toggleRight)
   window.removeEventListener('miniswarm:show-files', openFilesOnMobile)
   window.removeEventListener('miniswarm:escape', escapePanels)
+  window.removeEventListener('click', closeReasoningMenu)
 })
 </script>
 
@@ -760,7 +831,8 @@ onBeforeUnmount(() => {
           </div>
           <div v-if="settingsOpen" class="composer-settings">
             <label><span>模型</span><select v-model="modelMode"><option value="auto">自动</option><option value="deepseek-v4-pro">V4 Pro</option><option value="deepseek-v4-flash">V4 Flash</option></select></label>
-            <label><span>思考</span><select v-model="executionMode"><option value="standard">标准</option><option value="deep">深度思考</option></select></label>
+            <label><span>推理模式</span><select v-model="reasoningMode"><option v-for="option in reasoningModes" :key="option.value" :value="option.value">{{ option.label }}</option></select></label>
+            <label><span>推理强度</span><select v-model="reasoningEffort"><option v-for="option in reasoningEfforts" :key="option.value" :value="option.value">{{ option.label }}</option></select></label>
             <label><span>安全</span><select v-model="autonomyMode"><option value="safe">安全审批</option><option value="yolo">YOLO（仅本任务）</option></select></label>
             <label><span>任务类型</span><select v-model="taskType"><option value="auto">自动</option><option value="document">文档</option><option value="code">代码</option><option value="data">数据</option><option value="file">文件</option></select></label>
             <label><span>Skills</span><select v-model="skillMode"><option value="auto">自主判断</option><option value="manual">仅选中项</option><option value="off">关闭</option></select></label>
@@ -778,14 +850,45 @@ onBeforeUnmount(() => {
               <button class="tools-settings-button" type="button" title="工具与设置" @click="settingsOpen = !settingsOpen">
                 <span>⌘</span>工具与设置
               </button>
-              <button
-                type="button"
-                :class="['composer-option-pill', { active: thinkingEnabled }]"
-                :aria-pressed="thinkingEnabled"
-                @click="toggleThinking"
-              >
-                <span>◉</span>{{ thinkingEnabled ? '深度思考' : '思考' }}
-              </button>
+              <div class="reasoning-picker" @click.stop>
+                <button
+                  type="button"
+                  :class="['composer-option-pill', { active: reasoningActive }]"
+                  :aria-expanded="reasoningMenuOpen"
+                  :title="`${reasoningEffortLabel}强度 · ${reasoningModeLabel}`"
+                  @click="reasoningMenuOpen = !reasoningMenuOpen; reasoningSubmenuOpen = false"
+                >
+                  <span>◉</span>{{ reasoningEffortLabel }}<b>⌄</b>
+                </button>
+                <div v-if="reasoningMenuOpen" class="reasoning-menu" role="menu">
+                  <small>推理强度</small>
+                  <button
+                    v-for="option in reasoningEfforts"
+                    :key="option.value"
+                    type="button"
+                    :class="{ selected: reasoningEffort === option.value }"
+                    @click="selectReasoningEffort(option.value)"
+                  >
+                    <span>{{ option.label }}</span><i>{{ reasoningEffort === option.value ? '✓' : '' }}</i>
+                  </button>
+                  <hr />
+                  <button type="button" class="reasoning-mode-trigger" @click="reasoningSubmenuOpen = !reasoningSubmenuOpen">
+                    <span>{{ reasoningModeLabel }}</span><i>›</i>
+                  </button>
+                  <div v-if="reasoningSubmenuOpen" class="reasoning-submenu" role="menu">
+                    <small>推理模式</small>
+                    <button
+                      v-for="option in reasoningModes"
+                      :key="option.value"
+                      type="button"
+                      :class="{ selected: reasoningMode === option.value }"
+                      @click="selectReasoningMode(option.value)"
+                    >
+                      <span>{{ option.label }}</span><i>{{ reasoningMode === option.value ? '✓' : '' }}</i>
+                    </button>
+                  </div>
+                </div>
+              </div>
               <button
                 type="button"
                 :class="['composer-option-pill', { active: webSearchEnabled }]"

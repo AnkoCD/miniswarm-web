@@ -4,18 +4,18 @@ MiniSwarm Web 是一个面向小团队（当前最多 3 个账号）的网页版
 
 项目当前已部署在单台 Ubuntu 服务器，通过 1Panel、Docker Compose 和 OpenResty 管理。它不是通用聊天机器人，也不是宿主机远程控制工具；核心目标是让手机或电脑浏览器能够稳定完成长时间、多文件、可追踪的办公任务。
 
-> 当前文档快照：2026-07-29。数据库最新迁移为 `0013_codex_workspace`。
+> 当前文档快照：2026-08-01。数据库最新迁移为 `0015_minitot_reasoning`。
 
 ## 1. 当前状态
 
 项目已完成从单任务 Agent 原型到 Codex 风格云端工作台的主要闭环：
 
 - 聊天、执行任务、修改文件共用同一项目会话。
-- DeepSeek Planner 生成结构化 DAG，Orchestrator 选择单 Agent 或 Swarm。
+- MiniTot 是唯一业务模型网关：它调用 DeepSeek 兼容接口，并为关键决策提供有预算的分支推理；Planner 生成结构化 DAG，Orchestrator 选择单 Agent 或 Swarm。
 - 单任务最多 8 个工作 Agent，之后由 1 个只读 Reviewer 验收；全系统最多并发 12 个工作 Agent。
 - 每个 Agent 默认最多 40 轮模型/工具循环，单任务工具预算最多 240 次。
 - Supervisor 可在任务运行中接收新要求，并在模型或工具安全检查点合并到版本化 Task Brief，不取消当前任务。
-- 普通聊天只调用 1 个模型，不创建子 Agent。
+- 普通聊天不创建子 Agent；直接/极速模式只调用 1 次模型，较高推理强度可先运行受限 MiniTot 分支，再流式生成最终回答。
 - 任务、消息、事件、文件、来源、审批、Token 用量和全局记忆持久化到 PostgreSQL。
 - SSE 支持断线补发；刷新页面不会丢失任务进度和聊天上下文。
 - Runner 提供受限 Python、文件、Office、AnySearch、MarkItDown 和文档质检能力。
@@ -135,12 +135,13 @@ PostgreSQL 是任务状态的唯一事实来源。Redis 即使丢失即时通知
 AGENT/
 ├─ backend/                 FastAPI、Celery、Agent、数据库与迁移
 │  ├─ app/api/              HTTP API
-│  ├─ app/agent/            DeepSeek、Planner、Executor、Skills
+│  ├─ app/mini_tot/         唯一模型网关、推理策略与 DeepSeek 兼容传输
+│  ├─ app/agent/            Planner、Executor、Supervisor、Skills
 │  ├─ app/worker/           control / agent / memory 队列
 │  ├─ app/quality.py        程序化交付门禁
 │  ├─ app/memory.py         全局与项目记忆
 │  ├─ app/models.py         SQLAlchemy 数据模型
-│  ├─ alembic/versions/     0001～0013 数据库迁移
+│  ├─ alembic/versions/     0001～0015 数据库迁移
 │  └─ tests/                后端测试
 ├─ frontend/                当前权威前端源码
 │  ├─ src/views/            工作台、项目、搜索、Skills、归档、管理
@@ -301,6 +302,8 @@ Agent 只读挂载 Skill，不能修改 Skill 源目录。安装 Skill 不代表
 | `0011` | 全局记忆和归档分析 |
 | `0012` | Skill 选择模式 |
 | `0013` | Codex 工作台、项目、文件版本、项目记忆、来源和预览 |
+| `0014` | Supervisor 运行中需求队列和版本化 Brief |
+| `0015` | MiniTot 推理模式、推理强度和消息级配置快照 |
 
 生产环境只通过 Alembic 修改结构，不在应用启动时自动建表。
 

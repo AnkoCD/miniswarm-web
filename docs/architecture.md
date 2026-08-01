@@ -16,6 +16,31 @@ Browser -> OpenResty -> frontend / api
                   per-task workspace
 ```
 
+## MiniTot 推理层
+
+所有业务模型调用统一进入 `app/mini_tot`，Agent 不再直接依赖 DeepSeek 适配器。MiniTot 自身不是模型服务；它负责选择推理策略、控制分支预算与并发，再通过内部的 DeepSeek 兼容传输访问现有模型端点。
+
+```text
+Web 推理模式 / 强度
+        |
+Planner / Supervisor / Chat / Worker / Reviewer
+        |
+MiniTotGateway
+        |-- direct: 单次模型调用
+        |-- normal / BFS / DFS: 有界生成、评估、剪枝
+        `-- critical: 固定视角并行审查
+        |
+最终模型调用（用户请求的工具与输出格式只在这一层开放）
+        |
+DeepSeek-compatible API
+```
+
+- 模式支持 `auto`、`direct`、`normal`、`critical`、`bfs`、`dfs`，强度支持 `smart`、`fast`、`medium`、`high`。
+- `auto` 同时按强度和 Agent 角色选策略：极速强度全部单次调用；智能强度只增强 Planner 与 Reviewer；高强度才扩展 Worker/聊天的关键决策。Worker 后续工具循环始终走直接模式，以控制 Token 和延迟。
+- 探索分支永远不接收工具定义，也不能写文件；它们只使用 MiniTot 内部 JSON 格式，用户调用携带的工具和 `response_format` 只传给最终调用。
+- 分支调用由全局次数、并发数和上下文长度共同限制；用量合并记入原有 `api_usage`。
+- Provider 原生隐藏推理与 MiniTot 分支内容不向浏览器、事件日志或交付文件暴露。
+
 ## 服务职责
 
 - `frontend`：移动端优先的 Vue 页面。

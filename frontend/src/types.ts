@@ -30,6 +30,8 @@ export interface Task {
   prompt: string
   task_type: string
   execution_mode: string
+  reasoning_mode: 'auto' | 'direct' | 'normal' | 'critical' | 'bfs' | 'dfs'
+  reasoning_effort: 'smart' | 'fast' | 'medium' | 'high'
   autonomy_mode: 'safe' | 'yolo'
   model_mode: string
   skill_mode: 'auto' | 'manual' | 'off'
@@ -117,6 +119,8 @@ export interface TaskMessage {
   author_user_id: string | null
   status: 'STREAMING' | 'COMPLETED' | 'FAILED'
   client_message_id: string | null
+  reasoning_mode: Task['reasoning_mode'] | null
+  reasoning_effort: Task['reasoning_effort'] | null
   created_at: string
 }
 

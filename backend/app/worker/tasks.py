@@ -4,7 +4,7 @@ from datetime import UTC, datetime
 
 from sqlalchemy import func, select
 
-from app.agent.deepseek import DeepSeekClient, DeepSeekError, resolve_task_model
+from app.mini_tot import MiniTotError, MiniTotGateway, resolve_task_model
 from app.agent.executor import AgentExecutor
 from app.agent.supervisor import Supervisor
 from app.agent.runner_client import RunnerClient, RunnerError
@@ -267,6 +267,8 @@ def supervise_message_task(self, task_id: str, directive_id: str):
         content = message.content
         brief_text = (brief.goal + "\n" + "；".join(brief.acceptance_criteria)) if brief else task.prompt
         deep = task.execution_mode == "deep"
+        reasoning_mode = message.reasoning_mode or task.reasoning_mode
+        reasoning_effort = message.reasoning_effort or task.reasoning_effort
         db.commit()
 
     decision, result = Supervisor(settings=settings).analyze(
@@ -274,6 +276,8 @@ def supervise_message_task(self, task_id: str, directive_id: str):
         brief=brief_text,
         nodes=compact_nodes,
         deep=deep,
+        reasoning_mode=reasoning_mode,
+        reasoning_effort=reasoning_effort,
     )
 
     dispatch_chat = False
@@ -693,6 +697,8 @@ def chat_reply_task(
             )
             model_name = resolve_task_model(task.model_mode, "worker", settings)
             thinking = task.execution_mode == "deep"
+            reasoning_mode = task.reasoning_mode
+            reasoning_effort = task.reasoning_effort
             assistant = TaskMessage(
                 task_id=task.id,
                 revision=task.current_revision,
@@ -700,6 +706,8 @@ def chat_reply_task(
                 mode="chat",
                 content="",
                 status="STREAMING",
+                reasoning_mode=reasoning_mode,
+                reasoning_effort=reasoning_effort,
             )
             db.add(assistant)
             db.flush()
@@ -721,11 +729,14 @@ def chat_reply_task(
         usage = None
         checkpoint_length = 0
         sequence = 0
-        for delta in DeepSeekClient(settings).stream_chat(
+        for delta in MiniTotGateway(settings).stream_chat(
             model=model_name,
             messages=messages,
             thinking=thinking,
             max_tokens=None,
+            reasoning_mode=reasoning_mode,
+            reasoning_effort=reasoning_effort,
+            reasoning_purpose="chat",
         ):
             if delta.usage is not None:
                 usage = delta.usage
@@ -753,7 +764,7 @@ def chat_reply_task(
                 checkpoint_length = current_length
         content = "".join(content_parts).strip()
         if not content:
-            raise DeepSeekError("聊天模型返回了空内容")
+            raise MiniTotError("聊天模型返回了空内容")
         with SessionLocal() as db:
             task = db.get(Task, task_id)
             if task is None:
@@ -771,7 +782,7 @@ def chat_reply_task(
             )
             assistant = db.get(TaskMessage, assistant_message_id)
             if assistant is None:
-                raise DeepSeekError("聊天消息草稿不存在")
+                raise MiniTotError("聊天消息草稿不存在")
             assistant.content = content[:20_000]
             assistant.status = "COMPLETED"
             add_event(db, task, "message.completed", "Agent 已回复", content=assistant.id)
@@ -782,7 +793,7 @@ def chat_reply_task(
             {"message_id": assistant_message_id, "content": content[:20_000]},
         )
         return {"status": "succeeded"}
-    except DeepSeekError as exc:
+    except MiniTotError as exc:
         with SessionLocal() as db:
             task = db.get(Task, task_id)
             if task is not None:
@@ -860,7 +871,7 @@ def analyze_archive_memory_task(self, extraction_id: str):
             )
             db.commit()
             return {"status": "succeeded", "count": count}
-    except DeepSeekError as exc:
+    except MiniTotError as exc:
         with SessionLocal() as db:
             extraction = db.get(MemoryExtraction, extraction_id)
             if extraction is not None:
@@ -892,12 +903,20 @@ def plan_task(self, task_id: str):
                 return {"status": "missing"}
             prompt = task_execution_prompt(db, task)
             deep = task.execution_mode == "deep"
+            reasoning_mode = task.reasoning_mode
+            reasoning_effort = task.reasoning_effort
             planner_model = resolve_task_model(task.model_mode, "planner", settings)
-        plan, result = Planner().create_plan(prompt, deep=deep, model=planner_model)
+        plan, result = Planner().create_plan(
+            prompt,
+            deep=deep,
+            model=planner_model,
+            reasoning_mode=reasoning_mode,
+            reasoning_effort=reasoning_effort,
+        )
         _persist_plan(task_id, plan, result, planner_model)
         run_task.apply_async(args=[task_id], queue="control")
         return {"status": "planned"}
-    except DeepSeekError as exc:
+    except MiniTotError as exc:
         with SessionLocal() as db:
             task = db.get(Task, task_id)
             if task:

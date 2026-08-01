@@ -27,7 +27,7 @@ from app.realtime import task_channel
 from app.worker.tasks import analyze_archive_memory_task, chat_reply_task, run_task, supervise_message_task
 from app.agent.skill_registry import available_skill_names
 from app.agent.interaction_router import resolve_interaction_mode
-from app.agent.deepseek import resolve_task_model
+from app.mini_tot import resolve_task_model
 from app.office_preview import office_preview_pdf
 
 
@@ -39,6 +39,22 @@ def _with_web_search_directive(content: str) -> str:
     if cleaned.startswith(WEB_SEARCH_DIRECTIVE):
         return cleaned
     return f"{WEB_SEARCH_DIRECTIVE}\n\n{cleaned}"
+
+
+def _reasoning_profile(
+    reasoning_mode: str | None,
+    reasoning_effort: str | None,
+    execution_mode: str | None,
+) -> tuple[str, str]:
+    legacy_deep = execution_mode == "deep"
+    return (
+        reasoning_mode or ("auto" if legacy_deep else "direct"),
+        reasoning_effort or ("high" if legacy_deep else "fast"),
+    )
+
+
+def _legacy_execution_mode(reasoning_effort: str) -> str:
+    return "deep" if reasoning_effort in {"medium", "high"} else "standard"
 
 router = APIRouter(prefix="/tasks", tags=["tasks"])
 
@@ -283,6 +299,11 @@ def create_task(
         else original_prompt
     )
     queued = payload.start_immediately and execution_kind != "chat"
+    reasoning_mode, reasoning_effort = _reasoning_profile(
+        payload.reasoning_mode,
+        payload.reasoning_effort,
+        payload.execution_mode,
+    )
     task = Task(
         owner_id=user.id,
         project_id=project.id,
@@ -292,7 +313,13 @@ def create_task(
         title=title,
         prompt=effective_prompt,
         task_type=payload.task_type,
-        execution_mode=payload.execution_mode,
+        execution_mode=(
+            _legacy_execution_mode(reasoning_effort)
+            if payload.reasoning_mode is not None or payload.reasoning_effort is not None
+            else payload.execution_mode
+        ),
+        reasoning_mode=reasoning_mode,
+        reasoning_effort=reasoning_effort,
         autonomy_mode=payload.autonomy_mode,
         model_mode=payload.model_mode,
         skill_mode=payload.skill_mode,
@@ -311,6 +338,8 @@ def create_task(
             author_user_id=user.id,
             status="COMPLETED",
             client_message_id=payload.client_request_id,
+            reasoning_mode=reasoning_mode,
+            reasoning_effort=reasoning_effort,
         )
     )
     if route is not None and route.usage is not None:
@@ -433,8 +462,17 @@ def create_task_message(
             raise HTTPException(status_code=409, detail="系统并发任务已满，请稍后再试")
         task.execution_kind = "task"
         task.status = TaskStatus.QUEUED
-    if payload.execution_mode:
+    if payload.reasoning_mode is not None:
+        task.reasoning_mode = payload.reasoning_mode
+    if payload.reasoning_effort is not None:
+        task.reasoning_effort = payload.reasoning_effort
+    if payload.execution_mode and payload.reasoning_mode is None and payload.reasoning_effort is None:
         task.execution_mode = payload.execution_mode
+        task.reasoning_mode, task.reasoning_effort = _reasoning_profile(
+            None, None, payload.execution_mode
+        )
+    elif payload.reasoning_mode is not None or payload.reasoning_effort is not None:
+        task.execution_mode = _legacy_execution_mode(task.reasoning_effort)
     original_content = payload.content.strip()
     effective_content = (
         _with_web_search_directive(original_content)
@@ -450,6 +488,8 @@ def create_task_message(
         author_user_id=user.id,
         status="COMPLETED",
         client_message_id=payload.client_message_id,
+        reasoning_mode=task.reasoning_mode,
+        reasoning_effort=task.reasoning_effort,
     )
     db.add(message)
     db.flush()

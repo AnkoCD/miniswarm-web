@@ -44,6 +44,12 @@ class TaskCreate(BaseModel):
     title: str | None = Field(default=None, max_length=160)
     task_type: str = Field(default="auto", pattern="^(auto|document|code|data|file)$")
     execution_mode: str = Field(default="standard", pattern="^(standard|deep)$")
+    reasoning_mode: str | None = Field(
+        default=None, pattern="^(auto|direct|normal|critical|bfs|dfs)$"
+    )
+    reasoning_effort: str | None = Field(
+        default=None, pattern="^(smart|fast|medium|high)$"
+    )
     autonomy_mode: str = Field(default="safe", pattern="^(safe|yolo)$")
     model_mode: str = Field(
         default="auto",
@@ -70,6 +76,8 @@ class TaskRead(BaseModel):
     prompt: str
     task_type: str
     execution_mode: str
+    reasoning_mode: str
+    reasoning_effort: str
     autonomy_mode: str
     model_mode: str
     skill_mode: str
@@ -115,6 +123,12 @@ class TaskMessageCreate(BaseModel):
     mode: Literal["auto", "chat", "revise", "task"] = "chat"
     client_message_id: str | None = Field(default=None, min_length=8, max_length=64)
     execution_mode: str | None = Field(default=None, pattern="^(standard|deep)$")
+    reasoning_mode: str | None = Field(
+        default=None, pattern="^(auto|direct|normal|critical|bfs|dfs)$"
+    )
+    reasoning_effort: str | None = Field(
+        default=None, pattern="^(smart|fast|medium|high)$"
+    )
     web_search: bool = False
 
 
@@ -129,6 +143,8 @@ class TaskMessageRead(BaseModel):
     author_user_id: str | None
     status: str
     client_message_id: str | None
+    reasoning_mode: str | None
+    reasoning_effort: str | None
     created_at: datetime
 
 
