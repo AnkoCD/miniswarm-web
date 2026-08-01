@@ -8,6 +8,7 @@ from pathlib import Path
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.agent.deliverables import detect_multi_deliverable_request
 from app.core.config import get_settings
 from app.models import Artifact, Task, TaskNode, TaskSource, ToolCall, ToolCallStatus
 from app.storage import resolve_task_path, task_root
@@ -290,6 +291,25 @@ def validate_delivery(
         if artifact.size != actual_size:
             artifact.size = actual_size
         valid_artifacts.append(artifact)
+
+    multi_request = detect_multi_deliverable_request(task.prompt)
+    if multi_request is not None:
+        accepted_suffixes = {
+            suffix
+            for _, suffix_group in formats
+            for suffix in suffix_group
+        }
+        matching_deliverables = [
+            artifact
+            for artifact in valid_artifacts
+            if not accepted_suffixes
+            or Path(artifact.filename).suffix.lower() in accepted_suffixes
+        ]
+        if len(matching_deliverables) < multi_request.count:
+            result.producer_issues.append(
+                f"用户明确要求 {multi_request.count} {multi_request.unit}{multi_request.noun}，"
+                f"当前只有 {len(matching_deliverables)} 份有效最终交付文件"
+            )
 
     minimum_sources, minimum_domains, require_extract = source_requirements(task.prompt)
     source_domains: set[str] = set()

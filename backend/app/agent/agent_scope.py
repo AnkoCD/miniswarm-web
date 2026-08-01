@@ -82,6 +82,9 @@ class AgentPathScope:
 
     def guidance(self) -> str:
         return (
+            "Python path contract: the working directory is the task root. Use the exact "
+            "task-root-relative workspace/shared/output paths shown below; never prefix "
+            "them again with workspace/ and never rewrite them with ../. "
             f"当前 Agent 私有工作目录为 {self.workspace}，私有协作目录为 {self.shared}，"
             f"私有输出目录为 {self.output}。只能读取 input、自己目录以及明确依赖节点的 shared/output；"
             "不得读取或修改其他并行 Agent 的 workspace。"

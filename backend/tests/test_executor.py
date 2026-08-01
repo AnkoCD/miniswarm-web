@@ -1,5 +1,5 @@
 from app.agent.deepseek import ChatResult, ModelUsage, resolve_task_model
-from app.agent.executor import AgentExecutor
+from app.agent.executor import AgentExecutor, _failure_excerpt
 from app.agent.runner_client import RunnerResult
 from app.core.config import Settings
 from app.db import SessionLocal
@@ -30,6 +30,18 @@ class FakeRunner:
     def execute(self, **kwargs):
         self.calls.append(kwargs)
         return RunnerResult(ok=True, summary="文件已列出", data={"items": []})
+
+
+def test_failure_excerpt_keeps_exception_tail_and_distinguishes_failures():
+    common = "traceback context\n" + ("same frame\n" * 200)
+    first = _failure_excerpt(common + "NameError: WD_TABLE_ALIGNMENT is not defined", limit=240)
+    second = _failure_excerpt(common + "ValueError: invalid table width", limit=240)
+
+    assert first.startswith("traceback context")
+    assert "[truncated]" in first
+    assert first.endswith("NameError: WD_TABLE_ALIGNMENT is not defined")
+    assert second.endswith("ValueError: invalid table width")
+    assert first != second
 
 
 def make_task_and_node(
@@ -265,6 +277,48 @@ def test_artifact_registration_keeps_unrequested_preview_non_final(tmp_path):
         artifacts = {item.filename: item for item in db.query(Artifact).all()}
         assert artifacts["deck.pptx"].is_final is True
         assert artifacts["deck.pdf"].is_final is False
+
+
+def test_parallel_artifact_registration_preserves_sibling_deliverables(tmp_path):
+    settings = config(tmp_path)
+    with SessionLocal() as db:
+        task, first = make_task_and_node(db, tool_role="document")
+        task.prompt = "生成三套不同的初中数学试卷"
+        second = TaskNode(
+            task_id=task.id,
+            node_key="paper_2",
+            role="document",
+            title="试卷生成二",
+            instructions="生成第二套试卷",
+            depends_on=[],
+            weight=33,
+            status=NodeStatus.READY,
+        )
+        db.add(second)
+        db.commit()
+
+        root = task_root(task.owner_id, task.id, settings)
+        first_output = root / "output" / first.node_key / "试卷一.docx"
+        second_output = root / "output" / second.node_key / "试卷二.docx"
+        first_output.parent.mkdir(parents=True)
+        second_output.parent.mkdir(parents=True)
+        first_output.write_bytes(b"docx-one")
+        second_output.write_bytes(b"docx-two")
+
+        executor = AgentExecutor(FakeModel([]), FakeRunner(), settings)
+        executor._register_output_artifacts(db, task, first, root)
+        db.flush()
+        executor._register_output_artifacts(db, task, second, root)
+        db.flush()
+
+        artifacts = {
+            item.relative_path: item
+            for item in db.query(Artifact).filter(Artifact.task_id == task.id)
+        }
+        assert artifacts[f"output/{first.node_key}/试卷一.docx"].is_final is True
+        assert artifacts[f"output/{first.node_key}/试卷一.docx"].inspection_status == "READY"
+        assert artifacts["output/paper_2/试卷二.docx"].is_final is True
+        assert artifacts["output/paper_2/试卷二.docx"].inspection_status == "READY"
 
 
 def test_executor_injects_installed_ppt_skill(tmp_path):

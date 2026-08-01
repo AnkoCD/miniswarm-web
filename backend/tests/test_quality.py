@@ -101,6 +101,64 @@ def test_delivery_gate_rejects_wrong_explicit_format(tmp_path, monkeypatch):
         assert "用户要求 PDF" in result.summary
 
 
+def test_delivery_gate_requires_explicit_multi_deliverable_count(tmp_path, monkeypatch):
+    settings = _settings(tmp_path)
+    monkeypatch.setattr("app.quality.get_settings", lambda: settings)
+    with SessionLocal() as db:
+        user = db.query(User).filter_by(username="admin").one()
+        task = Task(
+            owner_id=user.id,
+            title="三套试卷",
+            prompt="生成三套不同的初中数学试卷",
+            task_type="document",
+            status=TaskStatus.REVIEWING,
+        )
+        db.add(task)
+        db.flush()
+        producer = TaskNode(
+            task_id=task.id,
+            node_key="paper_1",
+            role="document",
+            title="生成试卷",
+            instructions="生成试卷",
+            depends_on=[],
+            weight=80,
+            status=NodeStatus.SUCCEEDED,
+        )
+        reviewer = TaskNode(
+            task_id=task.id,
+            node_key="review",
+            role="reviewer",
+            title="检查试卷",
+            instructions="检查全部试卷",
+            depends_on=["paper_1"],
+            weight=20,
+            status=NodeStatus.SUCCEEDED,
+        )
+        db.add_all([producer, reviewer])
+        db.flush()
+        root = task_root(task.owner_id, task.id, settings)
+        for index in (1, 2):
+            path = root / "output" / f"paper_{index}" / f"试卷{index}.docx"
+            path.parent.mkdir(parents=True)
+            path.write_bytes(f"docx-{index}".encode())
+            db.add(
+                Artifact(
+                    task_id=task.id,
+                    node_id=producer.id,
+                    filename=path.name,
+                    relative_path=path.relative_to(root).as_posix(),
+                    size=path.stat().st_size,
+                    is_final=True,
+                    inspection_status="READY",
+                )
+            )
+        db.commit()
+
+        result = validate_delivery(db, task, [producer, reviewer])
+        assert "当前只有 2 份有效最终交付文件" in result.summary
+
+
 def test_requested_formats_ignore_explicitly_rejected_alternative():
     formats = dict(requested_formats("生成 PPTX，不要生成 HTML 替代品，也不需要 PDF"))
     assert "PPTX" in formats

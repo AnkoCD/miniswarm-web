@@ -7,6 +7,18 @@ from app.agent.agent_scope import (
 )
 
 
+def test_scope_guidance_uses_task_root_relative_python_paths():
+    scope = build_agent_scope(
+        node_key="paper_2",
+        role="document",
+        dependency_keys=[],
+        worker_count=3,
+    )
+    guidance = scope.guidance()
+    assert "working directory is the task root" in guidance
+    assert "never prefix them again with workspace/" in guidance
+
+
 def test_parallel_workers_have_separate_private_roots():
     first = build_agent_scope(
         node_key="paper_1",

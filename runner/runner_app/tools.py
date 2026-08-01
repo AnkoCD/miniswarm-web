@@ -1551,6 +1551,7 @@ def execute(request: ToolRequest, settings: RunnerSettings | None = None) -> Too
             "HOME": "/tmp",
         }
         command = [sys.executable, "-I", str(script)]
+        process_cwd = workspace.root / "workspace"
         if agent_scope is not None:
             runtime_home = workspace.root / agent_scope.workspace / ".runtime"
             runtime_home.mkdir(parents=True, exist_ok=True)
@@ -1559,7 +1560,14 @@ def execute(request: ToolRequest, settings: RunnerSettings | None = None) -> Too
                 "TMPDIR": str(runtime_home),
                 "XDG_CACHE_HOME": str(runtime_home / ".cache"),
                 "MPLCONFIGDIR": str(runtime_home / ".matplotlib"),
+                "MINISWARM_TASK_ROOT": str(workspace.root),
+                "MINISWARM_AGENT_WORKSPACE": agent_scope.workspace,
+                "MINISWARM_AGENT_OUTPUT": agent_scope.output,
             })
+            # Signed Agent paths are task-root-relative. Running scoped scripts
+            # from the task root makes the documented paths resolve exactly once
+            # instead of producing workspace/workspace/... false violations.
+            process_cwd = workspace.root
             command = [
                 sys.executable,
                 "-I",
@@ -1580,7 +1588,7 @@ def execute(request: ToolRequest, settings: RunnerSettings | None = None) -> Too
         try:
             completed = subprocess.run(
                 command,
-                cwd=workspace.root / "workspace",
+                cwd=process_cwd,
                 env=env,
                 capture_output=True,
                 timeout=timeout,
@@ -1614,6 +1622,7 @@ def execute(request: ToolRequest, settings: RunnerSettings | None = None) -> Too
             "HOME": "/tmp",
         }
         command = [sys.executable, "-I", "-m", "pytest", "-q", str(target)]
+        process_cwd = workspace_dir
         if agent_scope is not None:
             runtime_home = workspace.root / agent_scope.workspace / ".runtime"
             runtime_home.mkdir(parents=True, exist_ok=True)
@@ -1622,7 +1631,11 @@ def execute(request: ToolRequest, settings: RunnerSettings | None = None) -> Too
                 "TMPDIR": str(runtime_home),
                 "XDG_CACHE_HOME": str(runtime_home / ".cache"),
                 "MPLCONFIGDIR": str(runtime_home / ".matplotlib"),
+                "MINISWARM_TASK_ROOT": str(workspace.root),
+                "MINISWARM_AGENT_WORKSPACE": agent_scope.workspace,
+                "MINISWARM_AGENT_OUTPUT": agent_scope.output,
             })
+            process_cwd = workspace.root
             command = [
                 sys.executable,
                 "-I",
@@ -1643,7 +1656,7 @@ def execute(request: ToolRequest, settings: RunnerSettings | None = None) -> Too
         try:
             completed = subprocess.run(
                 command,
-                cwd=workspace_dir,
+                cwd=process_cwd,
                 env=env,
                 capture_output=True,
                 timeout=timeout,

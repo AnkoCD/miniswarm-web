@@ -48,6 +48,30 @@ import type {
   UsageSummary,
 } from '../types'
 
+const COMPOSER_PREFERENCES_KEY = 'miniswarm:composer-preferences'
+
+type ComposerPreferences = {
+  modelMode?: string
+  executionMode?: string
+  autonomyMode?: string
+  webSearchEnabled?: boolean
+  taskType?: string
+  skillMode?: 'auto' | 'manual' | 'off'
+  selectedSkills?: unknown
+}
+
+function readComposerPreferences(): ComposerPreferences {
+  try {
+    const parsed: unknown = JSON.parse(localStorage.getItem(COMPOSER_PREFERENCES_KEY) || '{}')
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? parsed as ComposerPreferences
+      : {}
+  } catch {
+    return {}
+  }
+}
+
+const initialComposerPreferences = readComposerPreferences()
 const route = useRoute()
 const router = useRouter()
 const taskId = computed(() => route.params.id ? String(route.params.id) : '')
@@ -66,8 +90,8 @@ const skillMode = ref<'auto' | 'manual' | 'off'>('auto')
 const prompt = ref('')
 const attachments = ref<File[]>([])
 const modelMode = ref('auto')
-const executionMode = ref('standard')
-const webSearchEnabled = ref(false)
+const executionMode = ref(initialComposerPreferences.executionMode === 'deep' ? 'deep' : 'standard')
+const webSearchEnabled = ref(initialComposerPreferences.webSearchEnabled === true)
 const autonomyMode = ref('safe')
 const taskType = ref('auto')
 const settingsOpen = ref(false)
@@ -171,9 +195,9 @@ function scrollToLatest(force = false) {
 
 function restoreComposerState() {
   try {
-    const preferences = JSON.parse(localStorage.getItem('miniswarm:composer-preferences') || '{}')
+    const preferences = readComposerPreferences()
     modelMode.value = preferences.modelMode || modelMode.value
-    if (!task.value) executionMode.value = preferences.executionMode || executionMode.value
+    executionMode.value = preferences.executionMode === 'deep' ? 'deep' : 'standard'
     autonomyMode.value = preferences.autonomyMode || autonomyMode.value
     webSearchEnabled.value = Boolean(preferences.webSearchEnabled)
     taskType.value = preferences.taskType || taskType.value
@@ -246,7 +270,6 @@ async function loadTaskData(reconnect = true, scrollToEnd = reconnect) {
   sources.value = sourceValues
   usage.value = usageValue
   supervision.value = supervisionValue
-  executionMode.value = taskValue.execution_mode || executionMode.value
   rightOpen.value = !window.matchMedia('(max-width: 767px)').matches
     && localStorage.getItem('miniswarm:run-panel-open') !== 'false'
   if (reconnect) connectStream()
@@ -582,7 +605,7 @@ watch(prompt, value => {
 })
 
 watch([modelMode, executionMode, webSearchEnabled, autonomyMode, taskType, skillMode, selectedSkills], () => {
-  localStorage.setItem('miniswarm:composer-preferences', JSON.stringify({
+  localStorage.setItem(COMPOSER_PREFERENCES_KEY, JSON.stringify({
     modelMode: modelMode.value,
     executionMode: executionMode.value,
     autonomyMode: autonomyMode.value,
@@ -591,7 +614,7 @@ watch([modelMode, executionMode, webSearchEnabled, autonomyMode, taskType, skill
     skillMode: skillMode.value,
     selectedSkills: selectedSkills.value,
   }))
-}, { deep: true })
+}, { deep: true, flush: 'sync' })
 
 watch(() => executionEvents.value.length, () => {
   nextTick(() => {

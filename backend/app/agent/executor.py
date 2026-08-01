@@ -53,6 +53,17 @@ class ExecutionOutcome:
     summary: str
 
 
+def _failure_excerpt(detail: str, limit: int = 1500) -> str:
+    """Keep both traceback context and the final exception within a bounded summary."""
+    value = detail.strip()
+    if len(value) <= limit:
+        return value
+    marker = "\n... [truncated] ...\n"
+    head_size = min(350, max(1, limit // 3))
+    tail_size = max(1, limit - head_size - len(marker))
+    return f"{value[:head_size]}{marker}{value[-tail_size:]}"
+
+
 SYSTEM_PROMPT = """你是 MiniSwarm 的受限执行 Agent。完成分配给你的节点，不要创建子 Agent。
 只能使用提供的工具；所有路径必须相对于任务根目录。输入在 input，工作文件在 workspace，协作结果在 shared，最终结果必须放在 output。
 Runner 已预装 python-docx、openpyxl、python-pptx、reportlab、pypdf、Pillow 和 defusedxml。每个 Agent 都有独立的 workspace、shared 和 output 路径，必须严格使用当前节点上下文给出的专属目录。禁止读取其他并行 Agent 的 workspace；只有 input、自己的目录和明确依赖节点的 shared/output 可读。制作 Word、Excel、PPT、PDF、HTML、CSV、文本、ZIP 或图片时，先用 write_text 写入当前节点专属脚本路径，再调用 run_python；script 必须是该私有 workspace 中刚写入的 Python 文件，不能填写代码、exec/open 表达式、绝对路径或其他 Agent 的路径。最终文件必须写入当前节点专属 output 子目录，并逐一调用 inspect_document。
@@ -534,7 +545,9 @@ class AgentExecutor:
                         if not ok and isinstance(data, dict):
                             failure_detail = str(data.get("stderr") or data.get("stdout") or "").strip()
                         call.result_summary = (
-                            f"{summary}：{failure_detail[:500]}" if failure_detail else summary
+                            f"{summary}：{_failure_excerpt(failure_detail)}"
+                            if failure_detail
+                            else summary
                         )
                         call.completed_at = datetime.now(UTC)
                         call.duration_ms = int((time.monotonic() - started) * 1000)
@@ -772,7 +785,14 @@ class AgentExecutor:
             db.add(artifact)
             add_event(db, task, "artifact.created", f"已生成 {path.name}", content=relative)
             known[relative] = artifact
+        output_prefix = artifact_scope.output.rstrip("/")
         for relative, artifact in known.items():
-            if relative.startswith("output/") and relative not in seen:
+            # A parallel producer must never mark another node's deliverables as
+            # missing merely because they are outside its isolated output root.
+            belongs_to_current_scope = (
+                relative == output_prefix
+                or relative.startswith(output_prefix + "/")
+            )
+            if belongs_to_current_scope and relative not in seen:
                 artifact.is_final = False
                 artifact.inspection_status = "MISSING"

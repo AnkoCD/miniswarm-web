@@ -371,6 +371,61 @@ def test_run_python_rejects_inline_code_with_actionable_message(settings):
         execute(item, settings)
 
 
+def test_scoped_run_python_uses_task_root_relative_paths(settings):
+    scope = {
+        "node_key": "paper_2",
+        "role": "document",
+        "workspace": "workspace/agents/paper_2",
+        "output": "output/paper_2",
+        "readable_roots": [
+            "input",
+            "workspace/agents/paper_2",
+            "shared/agents/paper_2",
+            "output/paper_2",
+        ],
+        "writable_roots": [
+            "workspace/agents/paper_2",
+            "shared/agents/paper_2",
+            "output/paper_2",
+        ],
+    }
+    script = """\
+import os
+from pathlib import Path
+
+Path("workspace/agents/paper_2/figs").mkdir(parents=True, exist_ok=True)
+Path("workspace/agents/paper_2/figs/chart.txt").write_text("chart", encoding="utf-8")
+Path("output/paper_2").mkdir(parents=True, exist_ok=True)
+Path("output/paper_2/result.txt").write_text("ok", encoding="utf-8")
+assert os.environ["MINISWARM_AGENT_WORKSPACE"] == "workspace/agents/paper_2"
+assert os.environ["MINISWARM_AGENT_OUTPUT"] == "output/paper_2"
+print("scoped-ok")
+"""
+    item = request(
+        "write_text",
+        {"path": "workspace/agents/paper_2/create_output.py", "content": script},
+    ).model_copy(update={"agent_scope": scope})
+    assert execute(item, settings).ok
+
+    result = execute(
+        item.model_copy(
+            update={
+                "tool": "run_python",
+                "arguments": {
+                    "script": "workspace/agents/paper_2/create_output.py",
+                    "timeout_seconds": 10,
+                },
+            }
+        ),
+        settings,
+    )
+    assert result.ok, result.data["stderr"]
+    assert result.data["stdout"].strip() == "scoped-ok"
+    root = Path(settings.data_root) / "users" / str(item.user_id) / "tasks" / str(item.task_id)
+    assert (root / "workspace/agents/paper_2/figs/chart.txt").read_text(encoding="utf-8") == "chart"
+    assert (root / "output/paper_2/result.txt").read_text(encoding="utf-8") == "ok"
+
+
 def test_document_libraries_create_and_verify_files(settings):
     script = r'''
 from pathlib import Path
