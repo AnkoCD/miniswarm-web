@@ -28,6 +28,7 @@ from app.worker.tasks import analyze_archive_memory_task, chat_reply_task, run_t
 from app.agent.skill_registry import available_skill_names
 from app.agent.interaction_router import resolve_interaction_mode
 from app.agent.deepseek import resolve_task_model
+from app.office_preview import office_preview_pdf
 
 
 WEB_SEARCH_DIRECTIVE = "【联网检索】请使用可用的联网搜索工具核对最新信息，并在结论中保留可追溯来源。"
@@ -738,6 +739,14 @@ def artifact_preview_metadata(
     except (ValueError, FileNotFoundError) as exc:
         raise HTTPException(status_code=404, detail="文件不存在") from exc
     kind, metadata = _preview_metadata(artifact, path)
+    if kind == "office":
+        rendered_preview = office_preview_pdf(task, artifact, path)
+        metadata.update(
+            {
+                "rendered_preview": "pdf",
+                "preview_size": rendered_preview.stat().st_size,
+            }
+        )
     artifact.preview_kind = kind
     artifact.preview_metadata = metadata
     if "error" in metadata:
@@ -788,9 +797,26 @@ def inline_artifact(
         return FileResponse(
             path,
             media_type=artifact.mime_type,
-            headers={"Content-Disposition": f'inline; filename="{artifact.filename}"'},
+            filename=artifact.filename,
+            content_disposition_type="inline",
+            headers={
+                "X-Content-Type-Options": "nosniff",
+                "Cache-Control": "private, max-age=60",
+            },
         )
-    raise HTTPException(status_code=415, detail="此文件提供结构摘要和下载，不支持内嵌预览")
+    if kind == "office":
+        rendered = office_preview_pdf(task, artifact, path)
+        return FileResponse(
+            rendered,
+            media_type="application/pdf",
+            filename=f"{Path(artifact.filename).stem}-preview.pdf",
+            content_disposition_type="inline",
+            headers={
+                "X-Content-Type-Options": "nosniff",
+                "Cache-Control": "private, max-age=60",
+            },
+        )
+    raise HTTPException(status_code=415, detail="此文件类型不支持内嵌预览")
 
 
 @router.get("/{task_id}/sources", response_model=list[TaskSourceRead])

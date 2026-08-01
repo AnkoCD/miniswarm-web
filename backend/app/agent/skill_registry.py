@@ -97,6 +97,7 @@ AUTO_RULES: dict[str, tuple[set[str], tuple[str, ...]]] = {
         ),
     ),
     PPT_SKILL_NAME: (PPT_ROLES, PPT_KEYWORDS),
+    "pptx": (PPT_ROLES, PPT_KEYWORDS),
 }
 
 
@@ -208,9 +209,16 @@ def select_task_skills(
     role: str,
 ) -> list[InstalledSkill]:
     installed = {item.name: item for item in list_installed_skills(settings)}
-    selected: list[str] = [
-        name for name in (getattr(task, "selected_skills", None) or []) if name in installed
-    ]
+    selected: list[str] = []
+    for name in (getattr(task, "selected_skills", None) or []):
+        if name not in installed:
+            continue
+        allowed_roles = AUTO_RULES.get(name)
+        if allowed_roles is not None and role not in allowed_roles[0]:
+            # Explicit selections must not bypass role boundaries (e.g. a
+            # data_analyst node must not receive the PPTX skill).
+            continue
+        selected.append(name)
     mode = getattr(task, "skill_mode", "auto")
     if mode == "off":
         return []

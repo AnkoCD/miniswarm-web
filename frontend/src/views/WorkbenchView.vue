@@ -30,6 +30,7 @@ import {
   uploadTaskFile,
 } from '../api'
 import ArtifactPreview from '../components/ArtifactPreview.vue'
+import AgentProcessCards from '../components/AgentProcessCards.vue'
 import MarkdownContent from '../components/MarkdownContent.vue'
 import type {
   Approval,
@@ -672,6 +673,15 @@ onBeforeUnmount(() => {
               <span v-if="message.status === 'FAILED'" class="message-error">生成失败</span>
             </div>
           </article>
+
+          <AgentProcessCards
+            v-if="task && nodes.length"
+            :task="task"
+            :nodes="nodes"
+            :events="events"
+            :tool-calls="toolCalls"
+            :artifacts="artifacts"
+          />
 
           <article v-for="approval in pendingApprovals" :key="approval.id" class="inline-approval">
             <span>需要你的批准</span>

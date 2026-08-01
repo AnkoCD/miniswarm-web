@@ -14,15 +14,15 @@ from app.storage import resolve_task_path, task_root
 
 
 FORMAT_RULES: tuple[tuple[str, tuple[str, ...], str], ...] = (
-    ("PPTX", (".pptx",), r"(?:\bpptx?\b|powerpoint|演示文稿|幻灯片)"),
-    ("DOCX", (".docx",), r"(?:\bdocx?\b|\bword\b|word文档)"),
-    ("XLSX", (".xlsx", ".xlsm"), r"(?:\bxlsx?\b|\bexcel\b|电子表格)"),
-    ("PDF", (".pdf",), r"(?:\bpdf\b)"),
-    ("CSV", (".csv",), r"(?:\bcsv\b)"),
-    ("HTML", (".html", ".htm"), r"(?:\bhtml\b|\.html\b)"),
-    ("ZIP", (".zip",), r"(?:\bzip\b|压缩包)"),
-    ("Markdown", (".md",), r"(?:\bmarkdown\b|\.md\b)"),
-    ("TXT", (".txt",), r"(?:\btxt\b|文本文件)"),
+    ("PPTX", (".pptx",), r"(?:(?<![a-z0-9])pptx?(?![a-z0-9])|powerpoint|演示文稿|幻灯片)"),
+    ("DOCX", (".docx",), r"(?:(?<![a-z0-9])docx?(?![a-z0-9])|(?<![a-z0-9])word(?![a-z0-9])|word文档)"),
+    ("XLSX", (".xlsx", ".xlsm"), r"(?:(?<![a-z0-9])xlsx?(?![a-z0-9])|(?<![a-z0-9])excel(?![a-z0-9])|电子表格)"),
+    ("PDF", (".pdf",), r"(?:(?<![a-z0-9])pdf(?![a-z0-9]))"),
+    ("CSV", (".csv",), r"(?:(?<![a-z0-9])csv(?![a-z0-9]))"),
+    ("HTML", (".html", ".htm"), r"(?:(?<![a-z0-9])html(?![a-z0-9])|\.html(?![a-z0-9]))"),
+    ("ZIP", (".zip",), r"(?:(?<![a-z0-9])zip(?![a-z0-9])|压缩包)"),
+    ("Markdown", (".md",), r"(?:(?<![a-z0-9])markdown(?![a-z0-9])|\.md(?![a-z0-9]))"),
+    ("TXT", (".txt",), r"(?:(?<![a-z0-9])txt(?![a-z0-9])|文本文件)"),
 )
 
 INSPECTABLE_SUFFIXES = {
@@ -148,6 +148,21 @@ def requested_formats(prompt: str) -> list[tuple[str, tuple[str, ...]]]:
     elif not results and DEFAULT_DOCX.search(normalized):
         results.append(("DOCX", (".docx",)))
     return results
+
+
+def is_requested_delivery_artifact(prompt: str, filename: str) -> bool:
+    """Return whether an output file is a user-requested delivery format.
+
+    When the user names one or more formats, conversions and render previews in
+    other formats remain useful working artifacts but must not block delivery.
+    Tasks without an explicit/default format keep the historical behavior and
+    treat every output file as deliverable.
+    """
+    formats = requested_formats(prompt)
+    if not formats:
+        return True
+    suffix = Path(filename).suffix.lower()
+    return any(suffix in accepted for _, accepted in formats)
 
 
 def requires_file_output(task: Task, formats: list[tuple[str, tuple[str, ...]]]) -> bool:

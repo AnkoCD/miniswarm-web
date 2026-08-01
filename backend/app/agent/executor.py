@@ -11,6 +11,12 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.agent.deepseek import DeepSeekClient, DeepSeekError, resolve_task_model
+from app.agent.agent_context import isolated_agent_context
+from app.agent.agent_scope import (
+    AgentScopeError,
+    build_agent_scope,
+    enforce_tool_scope,
+)
 from app.agent.risk import approval_reason, yolo_auto_approvable
 from app.agent.runner_client import RunnerClient, RunnerError
 from app.agent.skill_manager_client import SkillManagerClient, SkillManagerError
@@ -38,6 +44,7 @@ from app.sources import capture_search_results
 from app.services import add_event, request_approval, task_execution_prompt
 from app.storage import task_root
 from app.project_files import preview_kind
+from app.quality import is_requested_delivery_artifact
 
 
 @dataclass(frozen=True)
@@ -48,7 +55,7 @@ class ExecutionOutcome:
 
 SYSTEM_PROMPT = """你是 MiniSwarm 的受限执行 Agent。完成分配给你的节点，不要创建子 Agent。
 只能使用提供的工具；所有路径必须相对于任务根目录。输入在 input，工作文件在 workspace，协作结果在 shared，最终结果必须放在 output。
-Runner 已预装 python-docx、openpyxl、python-pptx、reportlab、pypdf、Pillow 和 defusedxml。制作 Word、Excel、PPT、PDF、HTML、CSV、文本、ZIP 或图片时，先用 write_text 把脚本写到 workspace/create_output.py，再调用 run_python，script 参数必须直接填写刚才 write_text 成功返回的同一路径 workspace/create_output.py，绝不能填写 Python 代码、exec/open 表达式或绝对路径。脚本运行目录是 workspace，最终文件写到 ../output/；随后必须对每个最终文件调用 inspect_document 验证。
+Runner 已预装 python-docx、openpyxl、python-pptx、reportlab、pypdf、Pillow 和 defusedxml。每个 Agent 都有独立的 workspace、shared 和 output 路径，必须严格使用当前节点上下文给出的专属目录。禁止读取其他并行 Agent 的 workspace；只有 input、自己的目录和明确依赖节点的 shared/output 可读。制作 Word、Excel、PPT、PDF、HTML、CSV、文本、ZIP 或图片时，先用 write_text 写入当前节点专属脚本路径，再调用 run_python；script 必须是该私有 workspace 中刚写入的 Python 文件，不能填写代码、exec/open 表达式、绝对路径或其他 Agent 的路径。最终文件必须写入当前节点专属 output 子目录，并逐一调用 inspect_document。
 办公交付以原生、可继续编辑的 DOCX/XLSX/PPTX 为优先；用户要求 PDF 时再单独生成 PDF。不得用 HTML、图片或 Markdown 冒充 Office 文件。
 DOCX 新建文档必须先按用途选择统一的商务样式，使用真实标题样式和真实编号，显式设置页边距、正文/标题字号、段落间距、页眉页脚；表格必须按内容设置列宽、单元格边距和重复表头，不得用表格包装普通长段落，不得用手工圆点或手工数字伪造列表。来源附录包含长 URL 时避免使用五列以上的窄表格，优先采用一条来源一段或横向页面，保证标题、机构、日期和完整可点击 URL 均可读。修改既有 DOCX 时保留原样式并做局部修改。
 XLSX 必须区分输入、计算和输出区域；派生值使用可审计公式，不得在计算区硬编码结果；正确设置日期、百分比、货币和数字格式，合理列宽、冻结窗格、筛选和数据验证。公式引用中文或含空格工作表时始终写成 '工作表名'!A1，并先建立明确的参数单元格映射，避免引用错行；例如先定义 `PARAM={"base":"'参数表'!$B$3","growth":"'参数表'!$B$4"}`，再用 `f"={PARAM['base']}*(1+{PARAM['growth']})"`，绝不能使用未加引号的 `参数表!B1`，也不能把标题行或表头行误当参数。列表数据验证使用英文逗号分隔。重要汇总放在明显位置，只有能帮助判断时才制作图表。使用 openpyxl 时 chart.add_data(...) 返回 None，不得把返回值当作 Series；需要修改系列时从 chart.series[-1] 取得，优先把系列标题写入源数据表头并使用 titles_from_data=True。公式必须处理除零和缺失值。PageSetupProperties 的正确导入是 `from openpyxl.worksheet.properties import PageSetupProperties`，绝不能从 `openpyxl.worksheet.page` 导入。为每个工作表显式设置 print_area、orientation、`sheet_properties.pageSetUpPr=PageSetupProperties(fitToPage=True)`、fitToWidth=1；普通明细 fitToHeight=0，单页仪表板 fitToHeight=1，并把图表尺寸与锚点控制在打印区域内。金额/日期列必须足够宽，渲染结果中不得出现 ### 或只有图表残片的重复分页；交付前由 inspect_document 重新计算、扫描错误并逐页渲染检查。
@@ -57,13 +64,13 @@ PDF 必须逐页保持统一页边距、字号、标题层级、页码和清晰�
 处理当天新闻时必须先调用 search_news，并在交付文档中保留每条新闻的来源链接和发布时间；不得依靠模型记忆编造实时信息。
 除非用户明确要求“今天、当前、最新、实时”信息，否则不要调用 search_news。
 重新进入节点时会提供已有工具记录。已经成功的步骤不得重复；优先复用 workspace 和 output 中已有文件继续执行。
-角色为 researcher 时只负责检索、提取和把结构化证据写入 shared，不得生成最终 Office 文件；角色为 reader 时只负责读取、转换和整理 shared 笔记，不得接管最终交付。document、data_analyst 或 coder 节点负责制作文件。
+角色为 researcher 时只负责检索、提取和把结构化证据写入 shared，不得生成最终 Office 文件；角色为 reader 时只负责读取、转换和整理 shared 笔记，不得接管最终交付；角色为 data_analyst 时只负责数据分析并产出数据/统计中间结果（如 JSON、CSV、摘要），不得越级制作最终 Office 交付文档；最终 Office 交付文件由 document（或 coder）节点负责，除非本节点指令明确要求。
 当最终文件已经满足要求且 inspect_document 检查通过后，立即停止调用工具并返回可验证的完成摘要；不得为了“继续优化”反复重写已通过的文件。修复已有生成脚本时优先进行最小修改，避免无变化地整份重写。
 不得请求 sudo、宿主机目录、Docker Socket、服务配置或绕过审批。
 不要声称未实际创建的文件已经生成。遇到工具错误时先调整方法；完成后给出简短、可验证的结果摘要，不输出内部思考。
 """
 
-REVIEWER_SYSTEM_PROMPT = """你是 MiniSwarm 的只读 Reviewer。必须先调用 list_files 检查 output，再对清单中的每个最终文件逐一调用 inspect_document；DOCX、XLSX 和 PDF 会执行结构与逐页渲染质检，XLSX 还会重新计算并扫描公式错误，PPTX 会检查文本越界与显著重叠。不得用 read_text 读取 DOCX、XLSX、PPTX 或 PDF 二进制文件；需要核对正文时先用 convert_to_markdown 转换到 workspace，再读取转换结果。不得猜测不存在的 Skill 脚本路径。
+REVIEWER_SYSTEM_PROMPT = """你是 MiniSwarm 的只读 Reviewer。必须先调用 list_files 检查 output，再对当前 output 文件清单中 `required_delivery=true` 的最终交付文件逐一调用 inspect_document；`required_delivery=false` 是未被用户要求的转换预览或辅助文件，其问题只能作为建议，不能要求生产 Agent 返工，也不能阻止主要交付。DOCX、XLSX 和 PDF 会执行结构与逐页渲染质检，XLSX 还会重新计算并扫描公式错误，PPTX 会检查文本越界与显著重叠。不得用 read_text 读取 DOCX、XLSX、PPTX 或 PDF 二进制文件；需要核对正文时先用 convert_to_markdown 转换到当前节点上下文给出的私有 workspace，再读取转换结果。不得猜测不存在的 Skill 脚本路径。
 必须逐项核对用户要求与节点中的验收条件。不得仅根据生产 Agent 的文字摘要判定通过，也不得对目录调用 inspect_document。
 检查 DOCX 时关注内容层级、真实标题/列表、表格可读性、页眉页脚、空白页和渲染结果；检查 XLSX 时关注公式是否可追溯、数字格式、冻结/筛选、汇总区、图表有效性、公式错误、### 列宽截断和图表/表格溢出的重复分页；检查 PDF 时关注每页可读性、中文字体是否实际可见、空白页、异常黑页和引用，文本层可提取但渲染页看不到文字不能通过。
 若任务使用网络检索，必须核对来源数量、独立域名、发布时间和 URL，确保交付文件中能找到来源；深度调研不能只使用搜索摘要，必须有网页正文提取记录。
@@ -102,11 +109,41 @@ class AgentExecutor:
         db.commit()
 
         root = task_root(task.owner_id, task.id, self.settings)
+        worker_count = db.scalar(
+            select(func.count())
+            .select_from(TaskNode)
+            .where(
+                TaskNode.task_id == task.id,
+                TaskNode.revision == node.revision,
+                TaskNode.role != "reviewer",
+            )
+        ) or 1
+        agent_scope = build_agent_scope(
+            node_key=node.node_key,
+            role=node.role,
+            dependency_keys=list(node.depends_on),
+            worker_count=worker_count,
+        )
+        node_workspace = agent_scope.workspace
+        node_script = f"{node_workspace}/create_output.py"
+        node_shared = agent_scope.shared
+        node_output = agent_scope.output
+        for relative_dir in (node_workspace, node_shared, node_output):
+            (root / relative_dir).mkdir(parents=True, exist_ok=True)
+        isolated_context = isolated_agent_context(db, task)
         input_files = [p.relative_to(root).as_posix() for p in (root / "input").rglob("*") if p.is_file()]
         output_files = [
-            {"path": p.relative_to(root).as_posix(), "size": p.stat().st_size}
+            {
+                "path": p.relative_to(root).as_posix(),
+                "size": p.stat().st_size,
+                "required_delivery": is_requested_delivery_artifact(task.prompt, p.name),
+            }
             for p in (root / "output").rglob("*")
-            if p.is_file() and not p.is_symlink()
+            if (
+                p.is_file()
+                and not p.is_symlink()
+                and agent_scope.can_read(p.relative_to(root).as_posix())
+            )
         ]
         dependency_nodes = list(
             db.scalars(
@@ -123,7 +160,7 @@ class AgentExecutor:
         ) or "无"
         prior_tool_context = self._prior_tool_context(db, node)
         skill_text = "\n".join(
-            [task_execution_prompt(db, task), node.title, node.instructions]
+            [isolated_context, node.title, node.instructions]
         )
         skill_prompt, active_skills = load_task_skill_prompt(
             self.settings, task, skill_text, node.role
@@ -145,9 +182,14 @@ class AgentExecutor:
             {
                 "role": "user",
                 "content": (
-                    f"用户任务与对话上下文：\n{task_execution_prompt(db, task)}\n\n"
+                    f"隔离后的任务上下文：\n{isolated_context}\n\n"
                     f"服务器当前 UTC 日期：{datetime.now(UTC).date().isoformat()}\n"
                     f"当前节点：{node.title}\n角色：{node.role}\n"
+                    f"节点专属工作目录：{node_workspace}\n"
+                    f"节点专属脚本路径：{node_script}\n"
+                    f"节点专属协作目录：{node_shared}\n"
+                    f"节点专属输出目录：{node_output}\n"
+                    f"上下文与路径隔离规则：{agent_scope.guidance()}\n"
                     f"具体要求：{node.instructions}\n"
                     f"依赖节点结果：\n{dependency_context}\n"
                     f"可用输入文件：{json.dumps(input_files, ensure_ascii=False)}\n"
@@ -319,6 +361,28 @@ class AgentExecutor:
                 except (KeyError, TypeError, ValueError, json.JSONDecodeError):
                     messages.append({"role": "tool", "tool_call_id": str(raw_call.get("id", "invalid")), "content": "工具调用格式无效"})
                     continue
+                try:
+                    arguments = enforce_tool_scope(tool_name, arguments, agent_scope)
+                except AgentScopeError as exc:
+                    add_event(
+                        db, task, "tool.failed",
+                        f"{node.title} 的工具调用被上下文隔离器拦截",
+                        content=str(exc)[:1000],
+                    )
+                    db.commit()
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": call_id,
+                        "content": json.dumps(
+                            {
+                                "ok": False,
+                                "error": str(exc),
+                                "correction": agent_scope.guidance(),
+                            },
+                            ensure_ascii=False,
+                        ),
+                    })
+                    continue
                 revision_node_ids = select(TaskNode.id).where(
                     TaskNode.task_id == task.id,
                     TaskNode.revision == task.current_revision,
@@ -426,6 +490,7 @@ class AgentExecutor:
                                 task_id=task.id,
                                 tool=tool_name,
                                 arguments=arguments,
+                                agent_scope=agent_scope.to_payload(),
                                 approval_granted=approval_state in {
                                     "approved_once",
                                     "approved_for_task",
@@ -505,7 +570,8 @@ class AgentExecutor:
                             tool_payload["correction"] = self._failure_guidance(
                                 tool_name, call.result_summary or ""
                             )
-                        if failure_counts[signature] >= 4:
+                        repeat_limit = 2 if tool_name == "inspect_document" else 4
+                        if failure_counts[signature] >= repeat_limit:
                             node.status = NodeStatus.FAILED
                             node.result_summary = f"{tool_name} 连续失败，已停止重复尝试：{call.result_summary}"
                             node.completed_at = datetime.now(UTC)
@@ -584,6 +650,11 @@ class AgentExecutor:
 
     @staticmethod
     def _failure_guidance(tool_name: str, detail: str) -> str:
+        if tool_name == "inspect_document":
+            return (
+                "相同质检问题已经重复出现。不要继续转换、探测或原样重试；"
+                "对用户要求的交付文件进行一次确定性修复，否则明确报告阻塞原因。"
+            )
         if tool_name == "run_python":
             return (
                 "不要传入 Python 代码或 exec/open 表达式。先用 write_text 写入 "
@@ -648,17 +719,38 @@ class AgentExecutor:
             artifact.relative_path: artifact
             for artifact in db.scalars(select(Artifact).where(Artifact.task_id == task.id))
         }
-        for path in (root / "output").rglob("*"):
+        seen: set[str] = set()
+        worker_count = db.scalar(
+            select(func.count())
+            .select_from(TaskNode)
+            .where(
+                TaskNode.task_id == task.id,
+                TaskNode.revision == node.revision,
+                TaskNode.role != "reviewer",
+            )
+        ) or 1
+        artifact_scope = build_agent_scope(
+            node_key=node.node_key,
+            role=node.role,
+            dependency_keys=list(node.depends_on),
+            worker_count=worker_count,
+        )
+        output_root = root / artifact_scope.output
+        if not output_root.exists():
+            return
+        for path in output_root.rglob("*"):
             if not path.is_file() or path.is_symlink():
                 continue
             relative = path.relative_to(root).as_posix()
+            seen.add(relative)
             mime_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+            is_final = is_requested_delivery_artifact(task.prompt, path.name)
             if relative in known:
                 artifact = known[relative]
                 artifact.node_id = node.id
                 artifact.mime_type = mime_type
                 artifact.size = path.stat().st_size
-                artifact.is_final = True
+                artifact.is_final = is_final
                 artifact.preview_kind = preview_kind(path.name, mime_type)
                 artifact.inspection_status = "READY"
                 artifact.brief_version = node.applied_brief_version
@@ -672,7 +764,7 @@ class AgentExecutor:
                 relative_path=relative,
                 mime_type=mime_type,
                 size=path.stat().st_size,
-                is_final=True,
+                is_final=is_final,
                 preview_kind=preview_kind(path.name, mime_type),
                 inspection_status="READY",
                 brief_version=node.applied_brief_version,
@@ -680,3 +772,7 @@ class AgentExecutor:
             db.add(artifact)
             add_event(db, task, "artifact.created", f"已生成 {path.name}", content=relative)
             known[relative] = artifact
+        for relative, artifact in known.items():
+            if relative.startswith("output/") and relative not in seen:
+                artifact.is_final = False
+                artifact.inspection_status = "MISSING"

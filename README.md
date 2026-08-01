@@ -13,7 +13,7 @@ MiniSwarm Web 是一个面向小团队（当前最多 3 个账号）的网页版
 - 聊天、执行任务、修改文件共用同一项目会话。
 - DeepSeek Planner 生成结构化 DAG，Orchestrator 选择单 Agent 或 Swarm。
 - 单任务最多 8 个工作 Agent，之后由 1 个只读 Reviewer 验收；全系统最多并发 12 个工作 Agent。
-- 每个 Agent 默认最多 30 轮模型/工具循环，单任务工具预算最多 180 次。
+- 每个 Agent 默认最多 40 轮模型/工具循环，单任务工具预算最多 240 次。
 - Supervisor 可在任务运行中接收新要求，并在模型或工具安全检查点合并到版本化 Task Brief，不取消当前任务。
 - 普通聊天只调用 1 个模型，不创建子 Agent。
 - 任务、消息、事件、文件、来源、审批、Token 用量和全局记忆持久化到 PostgreSQL。
@@ -333,9 +333,9 @@ MAX_AGENTS_PER_TASK=12
 MAX_GLOBAL_AGENTS=16
 MAX_CONCURRENT_AGENTS_PER_TASK=8
 MAX_AGENT_DEPTH=1
-MAX_AGENT_ROUNDS=30
+MAX_AGENT_ROUNDS=40
 MAX_REVIEW_RETRIES=3
-MAX_TOOL_CALLS_PER_TASK=180
+MAX_TOOL_CALLS_PER_TASK=240
 TASK_TIMEOUT_MINUTES=45
 AGENT_TIMEOUT_MINUTES=20
 ```

@@ -12,12 +12,14 @@ SUPPORTED_MODELS = frozenset({"deepseek-v4-pro", "deepseek-v4-flash"})
 
 
 def resolve_task_model(model_mode: str, role: str, settings: Settings) -> str:
-    if model_mode in SUPPORTED_MODELS:
-        return model_mode
     if role == "planner":
         return settings.model_orchestrator
     if role == "reviewer":
         return settings.model_reviewer
+    if role == "supervisor":
+        return settings.model_orchestrator
+    if model_mode in SUPPORTED_MODELS:
+        return model_mode
     return settings.model_worker
 
 

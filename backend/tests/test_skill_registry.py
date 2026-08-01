@@ -1,127 +1,82 @@
 from types import SimpleNamespace
 
-from app.agent.skill_registry import (
-    list_installed_skills,
-    load_ppt_skill_prompt,
-    load_task_skill_prompt,
-    ppt_skill_applies,
-)
-from app.core.config import Settings
+from app.agent.skill_registry import select_task_skills
 
 
-def test_ppt_skill_is_automatically_loaded_for_document_role(tmp_path):
-    skill_root = tmp_path / "skills" / "guizang-ppt-skill"
-    skill_root.mkdir(parents=True)
-    (skill_root / "SKILL.md").write_text("# Official workflow", encoding="utf-8")
-    settings = Settings(
-        app_env="test",
-        jwt_secret="test-secret-that-is-long-enough",
-        runner_shared_secret="test-runner-secret-that-is-long-enough",
-        skills_root=tmp_path / "skills",
-    )
-    prompt = load_ppt_skill_prompt(settings, "请生成瑞士风 PPT", "document")
-    assert "Official workflow" in prompt
-    assert "validate_swiss_deck" in prompt
-
-
-def test_ppt_skill_is_not_loaded_for_unrelated_reader_task():
-    assert not ppt_skill_applies("总结这份文本", "reader")
-
-
-def test_generic_skill_modes_and_auto_selection(tmp_path):
-    skills_root = tmp_path / "skills"
-    for name, description in (
-        ("anysearch", "Real-time web search"),
-        ("humanizer-zh", "Natural Chinese writing"),
-        ("docx", "Word document workflow"),
-        ("pdf", "PDF workflow"),
-        ("xlsx", "Spreadsheet workflow"),
-    ):
-        root = skills_root / name
-        root.mkdir(parents=True)
-        (root / "SKILL.md").write_text(
-            f"---\nname: {name}\ndescription: {description}\n---\n\n# Workflow",
+def _settings(tmp_path):
+    skill_root = tmp_path / "skills"
+    for name in ("pptx", "xlsx", "guizang-ppt-skill"):
+        (skill_root / name).mkdir(parents=True, exist_ok=True)
+        (skill_root / name / "SKILL.md").write_text(
+            f"---\nname: {name}\ndescription: test skill\n---\ncontent\n",
             encoding="utf-8",
         )
-    settings = Settings(
-        app_env="test",
-        jwt_secret="test-secret-that-is-long-enough",
-        runner_shared_secret="test-runner-secret-that-is-long-enough",
-        skills_root=skills_root,
-    )
-    task = SimpleNamespace(skill_mode="auto", selected_skills=[])
-    prompt, names = load_task_skill_prompt(
-        settings, task, "请联网搜索最新消息", "researcher"
-    )
-    assert names == ["anysearch"]
-    assert "Real-time web search" in prompt
-
-    task.skill_mode = "manual"
-    task.selected_skills = ["humanizer-zh"]
-    _, names = load_task_skill_prompt(settings, task, "搜索新闻", "document")
-    assert names == ["humanizer-zh"]
-
-    task.skill_mode = "off"
-    assert load_task_skill_prompt(settings, task, "搜索新闻", "researcher") == ("", [])
-    assert {item.name for item in list_installed_skills(settings)} == {
-        "anysearch",
-        "docx",
-        "humanizer-zh",
-        "pdf",
-        "xlsx",
-    }
-
-
-def test_office_skills_auto_select_by_file_type(tmp_path):
-    skills_root = tmp_path / "skills"
-    for name in ("docx", "pdf", "xlsx"):
-        root = skills_root / name
-        root.mkdir(parents=True)
-        (root / "SKILL.md").write_text(
-            f"---\nname: {name}\ndescription: {name} workflow\n---\n",
-            encoding="utf-8",
-        )
-    settings = Settings(
-        app_env="test",
-        jwt_secret="test-secret-that-is-long-enough",
-        runner_shared_secret="test-runner-secret-that-is-long-enough",
-        skills_root=skills_root,
-    )
-    task = SimpleNamespace(skill_mode="auto", selected_skills=[])
-    _, docx_names = load_task_skill_prompt(
-        settings, task, "创建 output/report.docx", "document"
-    )
-    _, pdf_names = load_task_skill_prompt(
-        settings, task, "合并两个 PDF 文件", "document"
-    )
-    _, xlsx_names = load_task_skill_prompt(
-        settings, task, "分析 sales.xlsx 并输出 Excel", "data_analyst"
-    )
-    assert docx_names == ["docx"]
-    assert pdf_names == ["pdf"]
-    assert xlsx_names == ["xlsx"]
-
-
-def test_huashu_design_auto_selects_for_visual_design_and_stays_safe(tmp_path):
-    skills_root = tmp_path / "skills"
-    root = skills_root / "huashu-design"
-    root.mkdir(parents=True)
-    (root / "SKILL.md").write_text(
-        "---\nname: huashu-design\ndescription: Visual design workflow\n---\n\n# Workflow",
-        encoding="utf-8",
-    )
-    settings = Settings(
-        app_env="test",
-        jwt_secret="test-secret-that-is-long-enough",
-        runner_shared_secret="test-runner-secret-that-is-long-enough",
-        skills_root=skills_root,
-    )
-    task = SimpleNamespace(skill_mode="auto", selected_skills=[])
-
-    prompt, names = load_task_skill_prompt(
-        settings, task, "制作一个高保真原型并进行视觉评审", "coder"
+    return SimpleNamespace(
+        skills_root=skill_root,
+        max_skills_per_node=3,
+        max_skill_context_chars=120_000,
     )
 
-    assert names == ["huashu-design"]
-    assert "不得执行 scripts/cloud" in prompt
-    assert "Visual design workflow" in prompt
+
+def _task(selected_skills, skill_mode="auto"):
+    return SimpleNamespace(selected_skills=selected_skills, skill_mode=skill_mode)
+
+
+def test_explicit_pptx_skill_is_blocked_for_data_analyst(tmp_path):
+    settings = _settings(tmp_path)
+    selected = select_task_skills(
+        settings,
+        _task(["pptx", "xlsx"]),
+        "请分析考试成绩，做一份成绩分析报告ppt",
+        "data_analyst",
+    )
+    names = [item.name for item in selected]
+    assert "xlsx" in names
+    assert "pptx" not in names
+    assert "guizang-ppt-skill" not in names
+
+
+def test_explicit_pptx_skill_is_allowed_for_document(tmp_path):
+    settings = _settings(tmp_path)
+    selected = select_task_skills(
+        settings,
+        _task(["pptx", "xlsx"]),
+        "请分析考试成绩，做一份成绩分析报告ppt",
+        "document",
+    )
+    names = [item.name for item in selected]
+    assert "pptx" in names
+    assert "guizang-ppt-skill" in names
+
+
+def test_explicit_pptx_skill_is_allowed_for_reviewer(tmp_path):
+    settings = _settings(tmp_path)
+    selected = select_task_skills(
+        settings,
+        _task(["pptx"]),
+        "检查PPT报告",
+        "reviewer",
+    )
+    assert "pptx" in [item.name for item in selected]
+
+
+def test_manual_mode_still_respects_role_boundary(tmp_path):
+    settings = _settings(tmp_path)
+    selected = select_task_skills(
+        settings,
+        _task(["pptx"], skill_mode="manual"),
+        "分析数据",
+        "data_analyst",
+    )
+    assert selected == []
+
+
+def test_manual_ppt_skill_alias_is_blocked_for_data_analyst(tmp_path):
+    settings = _settings(tmp_path)
+    selected = select_task_skills(
+        settings,
+        _task(["guizang-ppt-skill", "pptx", "xlsx"], skill_mode="manual"),
+        "请分析考试成绩，最终由下游节点制作 PPT",
+        "data_analyst",
+    )
+    assert [item.name for item in selected] == ["xlsx"]

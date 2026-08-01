@@ -6,6 +6,7 @@ from typing import Literal
 from pydantic import BaseModel, Field, model_validator
 
 from app.agent.deepseek import ChatResult, DeepSeekClient, DeepSeekError
+from app.agent.deliverables import detect_multi_deliverable_request
 from app.core.config import Settings, get_settings
 
 
@@ -79,6 +80,9 @@ class TaskPlan(BaseModel):
 
 SYSTEM_PROMPT = """你是 MiniSwarm 的任务规划器。只输出一个 JSON 对象，不要输出 Markdown。
 你要选择 single 或 swarm。只有至少两个真正独立、不会同时写同一文件的子任务才选择 swarm。
+用户明确要求 N 套、N 份、N 个版本等多个独立交付物时，必须选择 swarm，并按交付物数量创建 N 个并列生产节点；例如“三套不同试卷”应创建 3 个 document 节点，而不是让一个节点循环生成三套。共享资料整理、统一规范或调研可以作为这些生产节点共同依赖的前置节点。
+每个并行生产节点必须负责且只负责一个交付物，并在 instructions 中指定互不冲突的 output/<node_id>/ 输出目录；最终 reviewer 同时依赖所有生产节点，并检查数量、差异性和每个文件。
+章节、步骤、阶段、页面、模块等同一作品的连续组成部分不要仅因数量而拆成多个独立交付 Agent。
 子 Agent 不能再创建 Agent。最后一个节点必须是 reviewer，且依赖所有最终产出节点。
 最多创建 12 个工作 Agent，另加 1 个 reviewer；简单任务仍只创建 1 个工作 Agent。
 必须输出 acceptance_criteria，列出 2 到 8 条可客观验证的验收条件；包含用户明确要求的文件格式、数量、语言、来源和质量要求。
@@ -126,12 +130,129 @@ class Planner:
         except (json.JSONDecodeError, ValueError) as exc:
             raise DeepSeekError("规划器返回的计划不符合约定") from exc
         self._normalize_office_roles(prompt, plan)
+        self._expand_multi_deliverables(prompt, plan)
+        # Mutations above intentionally rewrite the model-produced DAG. Re-run
+        # Pydantic validation so the same graph invariants still apply.
+        try:
+            plan = TaskPlan.model_validate(plan.model_dump())
+        except ValueError as exc:
+            raise DeepSeekError("多交付物拆分后的计划不符合约定") from exc
         worker_count = sum(node.role != "reviewer" for node in plan.nodes)
         if worker_count > self.settings.max_agents_per_task:
             raise DeepSeekError("规划器创建的 Agent 数量超过系统限制")
         if plan.nodes[-1].role != "reviewer":
             raise DeepSeekError("计划必须以 Reviewer 节点结束")
         return plan, result
+
+    @staticmethod
+    def _expand_multi_deliverables(prompt: str, plan: TaskPlan) -> None:
+        request = detect_multi_deliverable_request(prompt)
+        if request is None:
+            return
+
+        workers = [node for node in plan.nodes if node.role != "reviewer"]
+        reviewer = plan.nodes[-1]
+
+        # The model already produced enough parallel terminal deliverables.
+        producer_roles = {"document", "data_analyst", "coder", "file_worker"}
+        terminal_producers = [
+            node
+            for node in workers
+            if node.role in producer_roles
+            and not any(node.id in other.depends_on for other in workers)
+        ]
+        if plan.mode == "swarm" and len(terminal_producers) >= request.count:
+            return
+
+        noun = request.noun.lower()
+        candidates = [
+            node
+            for node in workers
+            if node.role in producer_roles
+            and noun in f"{node.title} {node.instructions}".lower()
+        ]
+        if not candidates and len(terminal_producers) == 1:
+            candidates = terminal_producers
+        if not candidates and len(workers) == 1:
+            candidates = workers
+        if len(candidates) != 1:
+            # Ambiguous plans are left untouched rather than risking a broken DAG.
+            return
+        producer = candidates[0]
+
+        # Only split a terminal producer. Downstream worker aggregation should be
+        # planned explicitly by the model instead of being guessed here.
+        if any(producer.id in node.depends_on for node in workers if node.id != producer.id):
+            return
+        if producer.id not in reviewer.depends_on:
+            return
+        new_reviewer_dep_count = len(reviewer.depends_on) - 1 + request.count
+        if new_reviewer_dep_count > 8:
+            return
+        if len(workers) - 1 + request.count > 12:
+            return
+
+        existing_ids = {node.id for node in plan.nodes}
+        base = re.sub(r"_+", "_", producer.id)[:38].rstrip("_") or "deliverable"
+        copies: list[PlanNode] = []
+        per_node_weight = max(1, producer.weight // request.count)
+        for index in range(1, request.count + 1):
+            candidate_id = f"{base}_{index}"
+            suffix = 1
+            while candidate_id in existing_ids:
+                suffix += 1
+                candidate_id = f"{base[:34]}_{index}_{suffix}"
+            existing_ids.add(candidate_id)
+            isolated_output = f"output/{candidate_id}/"
+            isolated_workspace = f"workspace/agents/{candidate_id}/"
+            copies.append(
+                PlanNode(
+                    id=candidate_id,
+                    role=producer.role,
+                    title=f"{producer.title[:104]}（第 {index} 份）",
+                    instructions=(
+                        f"{producer.instructions}\n\n"
+                        f"你只负责第 {index}/{request.count} 份独立的{request.noun}。"
+                        "必须与其他版本在内容、题目、结构或表达上形成可辨识差异，"
+                        "不得复制同一份内容后仅修改标题。"
+                        f"工作脚本和中间文件仅写入 {isolated_workspace}；"
+                        f"最终文件仅写入 {isolated_output}，不得修改其他并行节点目录。"
+                    )[:4000],
+                    depends_on=list(producer.depends_on),
+                    weight=per_node_weight,
+                )
+            )
+
+        rewritten: list[PlanNode] = []
+        for node in plan.nodes:
+            if node.id == producer.id:
+                rewritten.extend(copies)
+            elif node.role == "reviewer":
+                dependencies: list[str] = []
+                for dependency in node.depends_on:
+                    if dependency == producer.id:
+                        dependencies.extend(copy.id for copy in copies)
+                    else:
+                        dependencies.append(dependency)
+                node.depends_on = dependencies
+                node.instructions = (
+                    f"{node.instructions}\n\n"
+                    f"必须确认共有 {request.count} 份独立{request.noun}，逐份调用检查工具，"
+                    "并检查各版本不是简单改名或轻微改写。"
+                )[:4000]
+                rewritten.append(node)
+            else:
+                rewritten.append(node)
+        plan.nodes = rewritten
+        plan.mode = "swarm"
+
+        additions = [
+            f"最终交付物数量必须为 {request.count} 份",
+            f"{request.count} 份{request.noun}必须具有实质差异，且分别存放在独立输出目录",
+        ]
+        plan.acceptance_criteria = list(
+            dict.fromkeys([*plan.acceptance_criteria, *additions])
+        )[:12]
 
     @staticmethod
     def _normalize_office_roles(prompt: str, plan: TaskPlan) -> None:
@@ -145,7 +266,7 @@ class Planner:
             return
         if re.search(r"(?i)(\.xlsx\b|\bexcel\b|工作簿|电子表格|预算表|台账)", prompt):
             preferred_role: AgentRole = "data_analyst"
-        elif re.search(r"(?i)(\.docx\b|\bword\b|\.pdf\b|报告|合同|通知|纪要|手册)", prompt):
+        elif re.search(r"(?i)(\.docx\b|\bword\b|\.pdf\b|报告|合同|通知|纪要|手册|试卷|卷子)", prompt):
             preferred_role = "document"
         else:
             return

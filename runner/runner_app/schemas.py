@@ -32,6 +32,7 @@ class ToolRequest(BaseModel):
     tool: ToolName
     arguments: dict[str, Any] = Field(default_factory=dict)
     approval_granted: bool = False
+    agent_scope: dict[str, Any] | None = None
 
 
 class ToolResponse(BaseModel):

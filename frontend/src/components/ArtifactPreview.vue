@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { showFailToast } from 'vant'
 import { api, getArtifactPreview } from '../api'
 import type { Artifact, ArtifactPreview as Preview } from '../types'
@@ -11,9 +11,14 @@ const text = ref('')
 const html = ref('')
 const rows = ref<string[][]>([])
 const loading = ref(true)
-const inlineApiPath = `/tasks/${props.taskId}/artifacts/${props.artifact.id}/inline`
-const inlineUrl = `/api/tasks/${props.taskId}/artifacts/${props.artifact.id}/inline`
-const downloadUrl = `/api/tasks/${props.taskId}/artifacts/${props.artifact.id}/download`
+const frameLoading = ref(false)
+const frameError = ref(false)
+let loadGeneration = 0
+
+const inlineApiPath = computed(() => `/tasks/${props.taskId}/artifacts/${props.artifact.id}/inline`)
+const inlineUrl = computed(() => `/api${inlineApiPath.value}`)
+const downloadUrl = computed(() => `/api/tasks/${props.taskId}/artifacts/${props.artifact.id}/download`)
+const frameUrl = computed(() => `${inlineUrl.value}#toolbar=1&navpanes=0&view=FitH`)
 
 function sandboxHtml(source: string) {
   const policy = [
@@ -31,24 +36,15 @@ function sandboxHtml(source: string) {
   ].join('; ')
   const guard = `<meta http-equiv="Content-Security-Policy" content="${policy}"><meta name="referrer" content="no-referrer">`
   const slideCount = (source.match(/class=["'][^"']*\bslide\b[^"']*["']/gi) || []).length
-  // 演示文稿型 HTML 依赖自己的滚轮/键盘/触摸脚本翻页，不能覆盖 deck/slide 布局。
-  // 普通静态网页仍补上可滚动兜底，避免作者误设 overflow:hidden。
   const safeScrollStyle = slideCount > 1
     ? ''
-    : `<style id="miniswarm-safe-scroll">
-        html, body {
-          min-height: 100% !important;
-          overflow-y: auto !important;
-          overscroll-behavior: auto !important;
-        }
-      </style>`
+    : `<style id="miniswarm-safe-scroll">html,body{min-height:100%!important;overflow-y:auto!important;overscroll-behavior:auto!important}</style>`
   const head = /<head(?:\s[^>]*)?>/i
   if (head.test(source)) {
     const guarded = source.replace(head, match => `${match}${guard}`)
-    if (/<\/head>/i.test(guarded)) {
-      return guarded.replace(/<\/head>/i, `${safeScrollStyle}</head>`)
-    }
-    return `${guarded}${safeScrollStyle}`
+    return /<\/head>/i.test(guarded)
+      ? guarded.replace(/<\/head>/i, `${safeScrollStyle}</head>`)
+      : `${guarded}${safeScrollStyle}`
   }
   return `<!doctype html><html><head>${guard}${safeScrollStyle}</head><body>${source}</body></html>`
 }
@@ -59,26 +55,52 @@ function formatSize(size: number) {
   return `${(size / 1024 / 1024).toFixed(1)} MB`
 }
 
+function officeLabel() {
+  const suffix = props.artifact.filename.split('.').pop()?.toLowerCase()
+  if (suffix === 'docx') return 'Word 文档已由服务器转换为 PDF 预览'
+  if (suffix === 'pptx') return 'PowerPoint 已按幻灯片转换为 PDF 预览'
+  if (suffix === 'xlsx') return 'Excel 已按打印区域转换为 PDF 预览'
+  return 'Office 文件已转换为 PDF 预览'
+}
+
 async function load() {
+  const generation = ++loadGeneration
+  const taskId = props.taskId
+  const artifactId = props.artifact.id
+  const inlinePath = `/tasks/${taskId}/artifacts/${artifactId}/inline`
   loading.value = true
+  frameLoading.value = false
+  frameError.value = false
+  metadata.value = null
+  text.value = ''
+  html.value = ''
+  rows.value = []
   try {
-    metadata.value = await getArtifactPreview(props.taskId, props.artifact.id)
-    if (metadata.value.kind === 'text' || metadata.value.kind === 'html') {
-      const { data } = await api.get<string>(inlineApiPath, { responseType: 'text' })
-      if (metadata.value.kind === 'html') html.value = sandboxHtml(data)
+    const nextMetadata = await getArtifactPreview(taskId, artifactId)
+    if (generation !== loadGeneration) return
+    metadata.value = nextMetadata
+    if (nextMetadata.kind === 'text' || nextMetadata.kind === 'html') {
+      const { data } = await api.get<string>(inlinePath, { responseType: 'text' })
+      if (generation !== loadGeneration) return
+      if (nextMetadata.kind === 'html') html.value = sandboxHtml(data)
       else text.value = data
-    } else if (metadata.value.kind === 'csv') {
-      const { data } = await api.get<{ rows: string[][] }>(inlineApiPath)
+    } else if (nextMetadata.kind === 'csv') {
+      const { data } = await api.get<{ rows: string[][] }>(inlinePath)
+      if (generation !== loadGeneration) return
       rows.value = data.rows
+    } else if (nextMetadata.kind === 'pdf' || nextMetadata.kind === 'office') {
+      frameLoading.value = true
     }
   } catch (error: any) {
-    showFailToast(error?.response?.data?.detail || '文件预览失败')
+    if (generation === loadGeneration) {
+      showFailToast(error?.response?.data?.detail || '文件预览失败')
+    }
   } finally {
-    loading.value = false
+    if (generation === loadGeneration) loading.value = false
   }
 }
 
-onMounted(load)
+watch(() => [props.taskId, props.artifact.id], load, { immediate: true })
 </script>
 
 <template>
@@ -93,9 +115,11 @@ onMounted(load)
         <button class="icon-button" type="button" aria-label="关闭预览" @click="emit('close')">×</button>
       </div>
     </header>
+
     <div v-if="loading" class="workbench-empty compact">正在准备预览…</div>
     <template v-else-if="metadata">
       <pre v-if="metadata.kind === 'text'" class="text-preview">{{ text }}</pre>
+
       <div v-else-if="metadata.kind === 'csv'" class="csv-preview">
         <table>
           <tbody>
@@ -106,24 +130,41 @@ onMounted(load)
           </tbody>
         </table>
       </div>
+
       <div v-else-if="metadata.kind === 'image'" class="image-preview">
         <img :src="inlineUrl" :alt="artifact.filename" />
       </div>
+
       <div v-else-if="metadata.kind === 'html'" class="html-preview">
         <div class="html-preview-notice">隔离交互预览 · 文件内翻页已启用，工作台权限仍隔离</div>
+        <iframe sandbox="allow-scripts" scrolling="yes" referrerpolicy="no-referrer" :srcdoc="html" :title="artifact.filename" />
+      </div>
+
+      <div v-else-if="metadata.kind === 'pdf' || metadata.kind === 'office'" class="document-frame-preview">
+        <div v-if="metadata.kind === 'office'" class="office-preview-notice">
+          <strong>{{ officeLabel() }}</strong>
+          <span>预览文件缓存在当前任务的私有 workspace，不会替换或修改原文件。</span>
+        </div>
+        <div v-if="frameLoading" class="frame-loading">正在渲染页面…</div>
+        <div v-if="frameError" class="frame-error">
+          <strong>当前浏览器无法内嵌显示该文件</strong>
+          <a class="primary-inline-button" :href="downloadUrl">下载原文件</a>
+        </div>
         <iframe
-          sandbox="allow-scripts"
-          scrolling="yes"
-          referrerpolicy="no-referrer"
-          :srcdoc="html"
+          v-show="!frameError"
+          :key="`${taskId}:${artifact.id}`"
+          class="pdf-preview"
+          :src="frameUrl"
           :title="artifact.filename"
+          @load="frameLoading = false"
+          @error="frameLoading = false; frameError = true"
         />
       </div>
-      <iframe v-else-if="metadata.kind === 'pdf'" class="pdf-preview" :src="inlineUrl" :title="artifact.filename" />
+
       <div v-else class="office-preview">
         <div class="file-glyph">{{ artifact.filename.split('.').pop()?.toUpperCase() }}</div>
         <h2>{{ artifact.filename }}</h2>
-        <p>服务器已完成安全结构检查，不使用第三方在线预览服务。</p>
+        <p>该文件暂不支持在线渲染，可以下载原文件查看。</p>
         <dl>
           <template v-for="(value, key) in metadata.metadata" :key="key">
             <dt>{{ key }}</dt><dd>{{ Array.isArray(value) ? value.join('、') : value }}</dd>
@@ -134,3 +175,15 @@ onMounted(load)
     </template>
   </section>
 </template>
+
+<style scoped>
+.document-frame-preview { position: relative; display: flex; min-height: 0; flex: 1; flex-direction: column; overflow: hidden; }
+.office-preview-notice { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 9px 14px; border-bottom: 1px solid var(--ws-line); color: var(--ws-muted); background: var(--ws-soft); font-size: 10px; }
+.office-preview-notice strong { color: var(--ws-text); font-size: 10px; }
+.frame-error { display: grid; min-height: 220px; place-content: center; justify-items: center; gap: 14px; color: var(--ws-muted); background: var(--ws-bg); font-size: 12px; }
+.frame-loading { position: absolute; z-index: 2; inset: 42px 0 0; display: grid; place-items: center; color: var(--ws-muted); background: var(--ws-bg); font-size: 12px; pointer-events: none; }
+.document-frame-preview .pdf-preview { width: 100%; min-height: 0; flex: 1; border: 0; background: #ececea; }
+@media (max-width: 700px) {
+  .office-preview-notice { align-items: flex-start; flex-direction: column; gap: 3px; }
+}
+</style>

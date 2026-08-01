@@ -39,6 +39,7 @@ class RunnerClient:
         tool: str,
         arguments: dict[str, Any],
         approval_granted: bool,
+        agent_scope: dict[str, Any] | None = None,
     ) -> RunnerResult:
         payload = {
             "request_id": str(uuid.uuid4()),
@@ -47,6 +48,7 @@ class RunnerClient:
             "tool": tool,
             "arguments": arguments,
             "approval_granted": approval_granted,
+            "agent_scope": agent_scope,
         }
         body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
         timestamp = str(int(time.time()))

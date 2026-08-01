@@ -1,9 +1,9 @@
-from app.agent.deepseek import ChatResult, ModelUsage
+from app.agent.deepseek import ChatResult, ModelUsage, resolve_task_model
 from app.agent.executor import AgentExecutor
 from app.agent.runner_client import RunnerResult
 from app.core.config import Settings
 from app.db import SessionLocal
-from app.models import Approval, NodeStatus, Task, TaskNode, TaskStatus, ToolCall, ToolCallStatus, User
+from app.models import Artifact, Approval, NodeStatus, Task, TaskNode, TaskStatus, ToolCall, ToolCallStatus, User
 from app.storage import task_root
 
 
@@ -76,7 +76,7 @@ def test_executor_runs_tool_then_finishes(tmp_path):
             "role": "assistant",
             "content": "",
             "reasoning_content": "private",
-            "tool_calls": [{"id": "call-1", "function": {"name": "list_files", "arguments": "{\"path\":\".\"}"}}],
+            "tool_calls": [{"id": "call-1", "function": {"name": "list_files", "arguments": "{\"path\":\"workspace\"}"}}],
         },
         {"role": "assistant", "content": "已检查文件", "reasoning_content": "private", "tool_calls": None},
     ])
@@ -172,7 +172,7 @@ def test_tool_limit_is_scoped_to_current_revision(tmp_path):
             "content": "",
             "tool_calls": [{
                 "id": "call-current-revision",
-                "function": {"name": "list_files", "arguments": '{"path":"."}'},
+                "function": {"name": "list_files", "arguments": '{"path":"workspace"}'},
             }],
         },
         {"role": "assistant", "content": "当前修订完成", "tool_calls": None},
@@ -239,6 +239,32 @@ def test_executor_uses_task_model_and_thinking_choice(tmp_path):
         assert model.calls[0]["model"] == "deepseek-v4-flash"
         assert model.calls[0]["thinking"] is True
         assert model.calls[0]["max_tokens"] is None
+
+
+def test_flash_selection_only_applies_to_worker_roles(tmp_path):
+    settings = config(tmp_path)
+    assert resolve_task_model("deepseek-v4-flash", "document", settings) == "deepseek-v4-flash"
+    assert resolve_task_model("deepseek-v4-flash", "planner", settings) == settings.model_orchestrator
+    assert resolve_task_model("deepseek-v4-flash", "reviewer", settings) == settings.model_reviewer
+    assert resolve_task_model("deepseek-v4-flash", "supervisor", settings) == settings.model_orchestrator
+
+
+def test_artifact_registration_keeps_unrequested_preview_non_final(tmp_path):
+    settings = config(tmp_path)
+    with SessionLocal() as db:
+        task, node = make_task_and_node(db, tool_role="document")
+        task.prompt = "制作一份 7 页 PPTX 演示文稿"
+        root = task_root(task.owner_id, task.id, settings)
+        (root / "output" / "deck.pptx").write_bytes(b"pptx")
+        (root / "output" / "deck.pdf").write_bytes(b"pdf-preview")
+
+        AgentExecutor(FakeModel([]), FakeRunner(), settings)._register_output_artifacts(
+            db, task, node, root
+        )
+        db.flush()
+        artifacts = {item.filename: item for item in db.query(Artifact).all()}
+        assert artifacts["deck.pptx"].is_final is True
+        assert artifacts["deck.pdf"].is_final is False
 
 
 def test_executor_injects_installed_ppt_skill(tmp_path):

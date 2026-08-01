@@ -249,7 +249,7 @@ def test_client_sends_official_thinking_fields():
         body = json.loads(request.content)
         assert body["model"] == "deepseek-v4-flash"
         assert body["thinking"] == {"type": "enabled"}
-        assert body["reasoning_effort"] == "high"
+        assert body["reasoning_effort"] == "max"
         return httpx.Response(
             200,
             json={"choices": [{"message": {"role": "assistant", "content": "ok"}}]},

@@ -12,6 +12,7 @@ from app.models import (
 )
 from app.quality import (
     _artifact_source_domains,
+    is_requested_delivery_artifact,
     mark_verified_artifacts,
     requested_formats,
     source_requirements,
@@ -121,6 +122,13 @@ def test_requested_formats_choose_office_defaults_when_unspecified():
     assert dict(requested_formats("编写一份季度总结报告"))["DOCX"] == (".docx",)
     assert dict(requested_formats("制作一份项目跟踪表"))["XLSX"] == (".xlsx", ".xlsm")
     assert set(dict(requested_formats("制作季度总结报告 PPTX"))) == {"PPTX"}
+
+
+def test_only_requested_format_is_required_delivery_artifact():
+    prompt = "联网制作“当今AI发展趋势”7页PPT"
+    assert is_requested_delivery_artifact(prompt, "AI发展趋势.pptx")
+    assert not is_requested_delivery_artifact(prompt, "AI发展趋势.pdf")
+    assert is_requested_delivery_artifact("整理这些文件", "notes.pdf")
 
 
 def test_source_requirements_scale_with_research_depth():

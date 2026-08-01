@@ -10,6 +10,7 @@ import pytest
 from runner_app.schemas import ToolRequest
 from runner_app.tools import (
     ToolRejected,
+    _count_glyph_like_components,
     _pdf_visible_text_issues,
     _spreadsheet_pdf_text_issues,
     execute,
@@ -228,6 +229,23 @@ def test_pdf_visual_text_gate_allows_visible_sparse_cover():
         ["办公操作手册适用范围全体员工版本一" * 3],
         [{"page": 1, "ink_ratio": 0.01, "glyph_components": 24}],
     ) == []
+
+
+def test_glyph_component_detector_supports_light_and_dark_pages():
+    from PIL import Image, ImageDraw
+
+    def sample(background, foreground):
+        image = Image.new("L", (160, 80), background)
+        draw = ImageDraw.Draw(image)
+        for index in range(12):
+            x = 5 + (index % 6) * 24
+            y = 8 + (index // 6) * 28
+            draw.rectangle((x, y, x + 4, y + 7), fill=foreground)
+        return image
+
+    assert _count_glyph_like_components(sample(255, 20)) >= 10
+    assert _count_glyph_like_components(sample(20, 245)) >= 10
+    assert _count_glyph_like_components(Image.new("L", (160, 80), 20)) == 0
 
 
 def test_convert_document_uses_bounded_libreoffice_conversion(settings, monkeypatch):

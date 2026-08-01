@@ -47,9 +47,9 @@ class Settings(BaseSettings):
     max_global_agents: int = 16
     max_concurrent_agents_per_task: int = 8
     max_agent_depth: int = 1
-    max_agent_rounds: int = 30
+    max_agent_rounds: int = 40
     max_review_retries: int = 3
-    max_tool_calls_per_task: int = 180
+    max_tool_calls_per_task: int = 240
     max_memories_per_user: int = 500
     max_memory_context_chars: int = 6_000
     max_skills_per_node: int = 3

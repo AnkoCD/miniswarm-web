@@ -16,6 +16,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 from runner_app.config import RunnerSettings, get_settings
+from runner_app.agent_scope import RunnerScopeError, enforce_request_scope
 from runner_app.schemas import ToolRequest, ToolResponse
 
 
@@ -375,16 +376,38 @@ def _pdf_visual_qa(
     }
 
 
-def _count_glyph_like_components(gray: Any, *, threshold: int = 220) -> int:
-    """Count small connected dark components that are likely visible glyphs."""
+def _count_glyph_like_components(
+    gray: Any,
+    *,
+    contrast_threshold: int = 36,
+) -> int:
+    """Count small high-contrast components against the dominant page tone.
+
+    Using a fixed dark-pixel threshold incorrectly treats white text on a dark
+    slide as invisible. The median luminance is a stable approximation of the
+    page background for both light documents and dark presentation slides.
+    """
     width, height = gray.size
     pixels = gray.load()
+    histogram = gray.histogram()
+    midpoint = max(1, width * height) // 2
+    cumulative = 0
+    background = 255
+    for luminance, count in enumerate(histogram):
+        cumulative += count
+        if cumulative >= midpoint:
+            background = luminance
+            break
+
+    def is_foreground(x: int, y: int) -> bool:
+        return abs(int(pixels[x, y]) - background) >= contrast_threshold
+
     seen = bytearray(width * height)
     glyph_components = 0
     for y in range(height):
         for x in range(width):
             offset = y * width + x
-            if seen[offset] or pixels[x, y] >= threshold:
+            if seen[offset] or not is_foreground(x, y):
                 continue
             seen[offset] = 1
             stack = [(x, y)]
@@ -407,7 +430,7 @@ def _count_glyph_like_components(gray: Any, *, threshold: int = 220) -> int:
                         neighbor_offset = neighbor_y * width + neighbor_x
                         if (
                             seen[neighbor_offset]
-                            or pixels[neighbor_x, neighbor_y] >= threshold
+                            or not is_foreground(neighbor_x, neighbor_y)
                         ):
                             continue
                         seen[neighbor_offset] = 1
@@ -733,7 +756,10 @@ def _python_script_path(workspace: TaskWorkspace, raw: Any) -> Path:
 def execute(request: ToolRequest, settings: RunnerSettings | None = None) -> ToolResponse:
     settings = settings or get_settings()
     workspace = TaskWorkspace(request, settings)
-    args = request.arguments
+    try:
+        args, agent_scope = enforce_request_scope(request)
+    except RunnerScopeError as exc:
+        raise ToolRejected(str(exc)) from exc
 
     if request.tool == "list_files":
         base = workspace.path(args.get("path", "."), must_exist=True)
@@ -1524,9 +1550,36 @@ def execute(request: ToolRequest, settings: RunnerSettings | None = None) -> Too
             "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1",
             "HOME": "/tmp",
         }
+        command = [sys.executable, "-I", str(script)]
+        if agent_scope is not None:
+            runtime_home = workspace.root / agent_scope.workspace / ".runtime"
+            runtime_home.mkdir(parents=True, exist_ok=True)
+            env.update({
+                "HOME": str(runtime_home),
+                "TMPDIR": str(runtime_home),
+                "XDG_CACHE_HOME": str(runtime_home / ".cache"),
+                "MPLCONFIGDIR": str(runtime_home / ".matplotlib"),
+            })
+            command = [
+                sys.executable,
+                "-I",
+                str(Path(__file__).with_name("sandbox_runner.py")),
+                "--task-root",
+                str(workspace.root),
+                "--script",
+                str(script),
+                "--read-roots",
+                json.dumps(agent_scope.readable_roots),
+                "--write-roots",
+                json.dumps(agent_scope.writable_roots),
+                "--role",
+                agent_scope.role,
+                "--output-root",
+                agent_scope.output,
+            ]
         try:
             completed = subprocess.run(
-                [sys.executable, "-I", str(script)],
+                command,
                 cwd=workspace.root / "workspace",
                 env=env,
                 capture_output=True,
@@ -1560,9 +1613,36 @@ def execute(request: ToolRequest, settings: RunnerSettings | None = None) -> Too
             "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1",
             "HOME": "/tmp",
         }
+        command = [sys.executable, "-I", "-m", "pytest", "-q", str(target)]
+        if agent_scope is not None:
+            runtime_home = workspace.root / agent_scope.workspace / ".runtime"
+            runtime_home.mkdir(parents=True, exist_ok=True)
+            env.update({
+                "HOME": str(runtime_home),
+                "TMPDIR": str(runtime_home),
+                "XDG_CACHE_HOME": str(runtime_home / ".cache"),
+                "MPLCONFIGDIR": str(runtime_home / ".matplotlib"),
+            })
+            command = [
+                sys.executable,
+                "-I",
+                str(Path(__file__).with_name("sandbox_runner.py")),
+                "--task-root",
+                str(workspace.root),
+                "--pytest-target",
+                str(target),
+                "--read-roots",
+                json.dumps(agent_scope.readable_roots),
+                "--write-roots",
+                json.dumps(agent_scope.writable_roots),
+                "--role",
+                agent_scope.role,
+                "--output-root",
+                agent_scope.output,
+            ]
         try:
             completed = subprocess.run(
-                [sys.executable, "-I", "-m", "pytest", "-q", str(target)],
+                command,
                 cwd=workspace_dir,
                 env=env,
                 capture_output=True,
