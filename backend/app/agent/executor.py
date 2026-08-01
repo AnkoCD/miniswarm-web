@@ -47,6 +47,12 @@ from app.project_files import preview_kind
 from app.quality import is_requested_delivery_artifact
 
 
+_INSPECTABLE_DELIVERY_SUFFIXES = {".docx", ".xlsx", ".xlsm", ".pptx", ".pdf"}
+PPTX_QUALITY_PROMPT = """
+PPTX 质量硬规则：正文原则上不得小于 16pt；任何包含 40 个以上可见字符的正文、来源或 URL 文本块不得小于 14pt。内容过多时必须删减、拆页或集中到来源页，不能靠缩小字号塞入页面。优先使用调研节点提供的真实、可追溯图片；不得用粗糙的程序化占位插画替代已经找到的来源图片。
+"""
+
+
 @dataclass(frozen=True)
 class ExecutionOutcome:
     status: Literal["succeeded", "waiting", "failed"]
@@ -170,9 +176,10 @@ class AgentExecutor:
             for item in dependency_nodes
         ) or "无"
         prior_tool_context = self._prior_tool_context(db, node)
-        skill_text = "\n".join(
-            [isolated_context, node.title, node.instructions]
-        )
+        # Do not rank skills against isolated_context: it contains the literal
+        # list of every user-selected skill and would make all of them appear
+        # relevant. The task and node instructions describe the actual work.
+        skill_text = "\n".join([task.prompt, node.title, node.instructions])
         skill_prompt, active_skills = load_task_skill_prompt(
             self.settings, task, skill_text, node.role
         )
@@ -188,6 +195,7 @@ class AgentExecutor:
             {
                 "role": "system",
                 "content": (REVIEWER_SYSTEM_PROMPT if node.role == "reviewer" else SYSTEM_PROMPT)
+                + PPTX_QUALITY_PROMPT
                 + skill_prompt,
             },
             {
@@ -255,6 +263,19 @@ class AgentExecutor:
         ):
             failure_counts[(previous.tool_name, previous.result_summary or "")] += 1
 
+        successful_inspections = {
+            self._normalized_tool_path((previous.arguments or {}).get("path"))
+            for previous in db.scalars(
+                select(ToolCall).where(
+                    ToolCall.node_id == node.id,
+                    ToolCall.status == ToolCallStatus.SUCCEEDED,
+                    ToolCall.tool_name == "inspect_document",
+                )
+            )
+        }
+        successful_inspections.discard("")
+        finalization_notice_sent = False
+
         for _round in range(self.settings.max_agent_rounds):
             db.refresh(task)
             db.refresh(node)
@@ -263,7 +284,26 @@ class AgentExecutor:
                 self._finish_run(agent_run, "CANCELED", "任务已取消")
                 db.commit()
                 return ExecutionOutcome("failed", "任务已取消")
-            self._apply_brief_updates(db, task, node, messages)
+            if self._apply_brief_updates(db, task, node, messages):
+                successful_inspections.clear()
+                finalization_notice_sent = False
+            force_finalize = (
+                node.role != "reviewer"
+                and self._node_deliveries_inspected(
+                    task, root, agent_scope.output, successful_inspections
+                )
+            )
+            if force_finalize and not finalization_notice_sent:
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": (
+                            "当前节点要求的最终 Office 文件已全部通过 inspect_document。"
+                            "不要继续修改文件或调用工具；请立即返回简短、可验证的完成摘要。"
+                        ),
+                    }
+                )
+                finalization_notice_sent = True
             try:
                 if node.role == "reviewer" and _round == 0:
                     round_reasoning_mode = task.reasoning_mode
@@ -281,7 +321,7 @@ class AgentExecutor:
                     model=model_name,
                     messages=messages,
                     thinking=thinking_enabled,
-                    tools=tools,
+                    tools=[] if force_finalize else tools,
                     response_format={"type": "json_object"} if node.role == "reviewer" else None,
                     max_tokens=None,
                     reasoning_mode=round_reasoning_mode,
@@ -316,6 +356,23 @@ class AgentExecutor:
             tool_calls = message.get("tool_calls") or []
             content = message.get("content")
             messages.append(message)
+            if force_finalize and tool_calls:
+                for raw_call in tool_calls:
+                    messages.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": str(raw_call.get("id", "finalized")),
+                            "content": json.dumps(
+                                {
+                                    "ok": False,
+                                    "error": "最终交付文件已经通过质检，后续工具调用已跳过",
+                                    "correction": "直接返回完成摘要，不要继续修改文件",
+                                },
+                                ensure_ascii=False,
+                            ),
+                        }
+                    )
+                continue
             if not tool_calls:
                 db.refresh(node)
                 if self._apply_brief_updates(db, task, node, messages):
@@ -527,6 +584,12 @@ class AgentExecutor:
                             summary = runner_result.summary
                             data = runner_result.data
                         call.status = ToolCallStatus.SUCCEEDED if ok else ToolCallStatus.FAILED
+                        if ok and tool_name == "inspect_document":
+                            inspected_path = self._normalized_tool_path(
+                                arguments.get("path")
+                            )
+                            if inspected_path:
+                                successful_inspections.add(inspected_path)
                         if ok and tool_name in {"search_news", "anysearch"} and isinstance(data, dict):
                             if (
                                 tool_name == "anysearch"
@@ -691,6 +754,34 @@ class AgentExecutor:
         if "路径" in detail or "目录" in detail:
             return "只使用 input、workspace、shared、output 下的任务相对路径；不要使用 / 或绝对路径。"
         return "不要原样重复失败调用；先检查工具参数和现有文件，再采用不同方法。"
+
+    @staticmethod
+    def _normalized_tool_path(value: object) -> str:
+        if not isinstance(value, str):
+            return ""
+        return value.strip().replace("\\", "/").removeprefix("./")
+
+    @staticmethod
+    def _node_deliveries_inspected(
+        task: Task,
+        root: Path,
+        output_relative: str,
+        successful_inspections: set[str],
+    ) -> bool:
+        output_root = root / output_relative
+        if not output_root.is_dir():
+            return False
+        required = {
+            path.relative_to(root).as_posix()
+            for path in output_root.rglob("*")
+            if (
+                path.is_file()
+                and not path.is_symlink()
+                and path.suffix.lower() in _INSPECTABLE_DELIVERY_SUFFIXES
+                and is_requested_delivery_artifact(task.prompt, path.name)
+            )
+        }
+        return bool(required) and required.issubset(successful_inspections)
 
     @staticmethod
     def _prior_tool_context(db: Session, node: TaskNode) -> str:

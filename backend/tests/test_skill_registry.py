@@ -46,7 +46,7 @@ def test_explicit_pptx_skill_is_allowed_for_document(tmp_path):
     )
     names = [item.name for item in selected]
     assert "pptx" in names
-    assert "guizang-ppt-skill" in names
+    assert "guizang-ppt-skill" not in names
 
 
 def test_explicit_pptx_skill_is_allowed_for_reviewer(tmp_path):
@@ -80,3 +80,15 @@ def test_manual_ppt_skill_alias_is_blocked_for_data_analyst(tmp_path):
         "data_analyst",
     )
     assert [item.name for item in selected] == ["xlsx"]
+
+
+def test_manual_mode_prioritizes_ppt_skills_over_selection_order(tmp_path):
+    settings = _settings(tmp_path)
+    settings.max_skills_per_node = 2
+    selected = select_task_skills(
+        settings,
+        _task(["xlsx", "guizang-ppt-skill", "pptx"], skill_mode="manual"),
+        "Create a six-slide Swiss-style PPTX using guizang-ppt-skill",
+        "document",
+    )
+    assert [item.name for item in selected] == ["pptx", "guizang-ppt-skill"]

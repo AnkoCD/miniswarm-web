@@ -536,7 +536,7 @@ def test_inspect_document_rejects_overlapping_pptx_text(settings):
     second.text = "与第一段明显重叠"
     presentation.save(output / "overlap.pptx")
 
-    with pytest.raises(ToolRejected, match="文本越界或重叠"):
+    with pytest.raises(ToolRejected, match="text_overlap"):
         execute(item, settings)
 
 
@@ -559,6 +559,26 @@ def test_inspect_document_allows_minor_pptx_text_box_intersection(settings):
     result = execute(item, settings)
     assert result.ok
     assert result.data["layout_issues"] == []
+
+
+def test_inspect_document_rejects_long_pptx_copy_below_fourteen_points(settings):
+    from pptx import Presentation
+    from pptx.util import Inches, Pt
+
+    item = request("inspect_document", {"path": "output/tiny-copy.pptx"})
+    root = Path(settings.data_root) / "users" / str(item.user_id) / "tasks" / str(item.task_id)
+    output = root / "output"
+    output.mkdir(parents=True, exist_ok=True)
+    presentation = Presentation()
+    slide = presentation.slides.add_slide(presentation.slide_layouts[6])
+    box = slide.shapes.add_textbox(Inches(1), Inches(1), Inches(8), Inches(2))
+    run = box.text_frame.paragraphs[0].add_run()
+    run.text = "This long paragraph is intentionally unreadable in a projected presentation."
+    run.font.size = Pt(9)
+    presentation.save(output / "tiny-copy.pptx")
+
+    with pytest.raises(ToolRejected, match="small_body_text"):
+        execute(item, settings)
 
 
 def test_inspect_document_supports_html_csv_text_and_zip(settings):

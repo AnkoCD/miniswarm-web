@@ -174,7 +174,8 @@ TOOL_DEFINITIONS = [
             "description": (
                 "只读质检单个最终文件，不能传目录。DOCX 会检查正文、标题、列表、表格并逐页渲染；"
                 "XLSX 会检查工作表、公式、公式错误、格式并重新计算和渲染；PDF 会逐页渲染检查空白或异常页面；"
-                "PPTX 检查文本越界和显著重叠；另支持图片、HTML、CSV、JSON、Markdown、代码、文本和 ZIP。"
+                "PPTX 检查文本越界、显著重叠以及低于 14pt 的长文本块；"
+                "另支持图片、HTML、CSV、JSON、Markdown、代码、文本和 ZIP。"
             ),
             "parameters": {
                 "type": "object",

@@ -11,6 +11,10 @@ PPT_SKILL_NAME = "guizang-ppt-skill"
 PPT_KEYWORDS = (
     "ppt", "pptx", "slide", "deck", "幻灯片", "演示文稿", "演讲稿", "瑞士风", "杂志风"
 )
+GUIZANG_KEYWORDS = (
+    "guizang", "瑞士风", "杂志风", "swiss style", "网页 ppt", "html 幻灯片",
+    "电子杂志", "horizontal swipe deck",
+)
 PPT_ROLES = {"document", "coder", "reviewer"}
 SKILL_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
 DISPLAY_NAMES = {
@@ -96,7 +100,7 @@ AUTO_RULES: dict[str, tuple[set[str], tuple[str, ...]]] = {
             "motion design",
         ),
     ),
-    PPT_SKILL_NAME: (PPT_ROLES, PPT_KEYWORDS),
+    PPT_SKILL_NAME: (PPT_ROLES, GUIZANG_KEYWORDS),
     "pptx": (PPT_ROLES, PPT_KEYWORDS),
 }
 
@@ -202,6 +206,25 @@ def ppt_skill_applies(text: str, role: str) -> bool:
     return role in PPT_ROLES and any(keyword in lowered for keyword in PPT_KEYWORDS)
 
 
+def _skill_relevance(name: str, text: str, role: str) -> int:
+    """Rank eligible skills by the node's work, not the UI selection order."""
+    rule = AUTO_RULES.get(name)
+    if rule is None or role not in rule[0]:
+        return 0
+    lowered = f" {text.casefold()} "
+    if not any(keyword in lowered for keyword in rule[1]):
+        return 0
+    if name == "pptx":
+        return 400
+    if name == PPT_SKILL_NAME:
+        return 390
+    if name in {"docx", "xlsx", "pdf"}:
+        return 350
+    if name == "huashu-design":
+        return 200
+    return 100
+
+
 def select_task_skills(
     settings: Settings,
     task: Any,
@@ -228,7 +251,15 @@ def select_task_skills(
             if name in installed and role in roles and any(keyword in lowered for keyword in keywords):
                 selected.append(name)
     unique = list(dict.fromkeys(selected))
-    return [installed[name] for name in unique[: settings.max_skills_per_node]]
+    original_order = {name: index for index, name in enumerate(unique)}
+    ranked = sorted(
+        unique,
+        key=lambda name: (
+            -_skill_relevance(name, text, role),
+            original_order[name],
+        ),
+    )
+    return [installed[name] for name in ranked[: settings.max_skills_per_node]]
 
 
 def load_task_skill_prompt(

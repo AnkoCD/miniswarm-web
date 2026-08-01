@@ -99,7 +99,7 @@ class _HTMLSummaryParser(HTMLParser):
 
 
 def _pptx_layout_issues(presentation) -> list[dict]:
-    """Detect clear text overflow/overlap without flagging card backgrounds."""
+    """Detect clear text overflow, overlap, and unreadably small long copy."""
     points = 12_700
     tolerance = 2 * points
     issues: list[dict] = []
@@ -113,6 +113,26 @@ def _pptx_layout_issues(presentation) -> list[dict]:
             ):
                 continue
             text_shapes.append((shape_index, shape, text))
+            small_runs: list[tuple[int, float]] = []
+            if getattr(shape, "has_text_frame", False):
+                for paragraph in shape.text_frame.paragraphs:
+                    for run in paragraph.runs:
+                        visible = "".join(run.text.split())
+                        size = run.font.size
+                        if visible and size is not None and size.pt < 14:
+                            small_runs.append((len(visible), round(size.pt, 2)))
+            small_characters = sum(length for length, _ in small_runs)
+            if small_characters >= 40:
+                issues.append(
+                    {
+                        "slide": slide_number,
+                        "kind": "small_body_text",
+                        "shape": shape_index,
+                        "min_font_pt": min(size for _, size in small_runs),
+                        "small_text_characters": small_characters,
+                        "text": text.replace("\n", " / ")[:120],
+                    }
+                )
             if (
                 shape.left < -tolerance
                 or shape.top < -tolerance
@@ -1334,7 +1354,7 @@ def execute(request: ToolRequest, settings: RunnerSettings | None = None) -> Too
                 }
                 if layout_issues:
                     preview = json.dumps(layout_issues[:5], ensure_ascii=False)
-                    raise ToolRejected(f"PPTX 检测到文本越界或重叠：{preview}")
+                    raise ToolRejected(f"PPTX 检测到文本越界、重叠或字号过小：{preview}")
                 summary_detail = f"{len(presentation.slides)} 页，布局检查通过"
             elif suffix == ".pdf":
                 from pypdf import PdfReader

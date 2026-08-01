@@ -110,6 +110,42 @@ def test_executor_runs_tool_then_finishes(tmp_path):
         )
 
 
+def test_executor_forces_summary_after_required_office_file_passes_inspection(tmp_path):
+    model = FakeModel([
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [{
+                "id": "inspect-1",
+                "function": {
+                    "name": "inspect_document",
+                    "arguments": '{"path":"output/deck.pptx"}',
+                },
+            }],
+        },
+        {"role": "assistant", "content": "PPTX is complete and verified.", "tool_calls": None},
+    ])
+    runner = FakeRunner()
+    settings = config(tmp_path)
+    with SessionLocal() as db:
+        task, node = make_task_and_node(db, tool_role="document")
+        task.prompt = "Create one PPTX presentation"
+        root = task_root(task.owner_id, task.id, settings)
+        (root / "output").mkdir(parents=True, exist_ok=True)
+        (root / "output" / "deck.pptx").write_bytes(b"valid-enough-for-runner-stub")
+        db.commit()
+
+        outcome = AgentExecutor(model, runner, settings).run_node(db, task, node)
+
+        assert outcome.status == "succeeded"
+        assert len(runner.calls) == 1
+        assert model.calls[1]["tools"] == []
+        assert any(
+            item.get("role") == "user" and "inspect_document" in item.get("content", "")
+            for item in model.calls[1]["messages"]
+        )
+
+
 def test_executor_pauses_for_risky_tool(tmp_path):
     model = FakeModel([
         {

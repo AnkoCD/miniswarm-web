@@ -93,7 +93,7 @@ DOCX、XLSX、PPTX、PDF 的 acceptance_criteria 必须包含：真实目标格�
 需要联网调研时，把检索和文档制作拆成有依赖关系的节点；researcher 必须记录可追溯来源，深度调研至少交叉核对两个独立来源并提取主要网页正文，document 节点必须把来源标题、机构、日期和 URL 写入交付文件。
 涉及当天新闻时，researcher 可以使用 search_news 获取带来源链接和发布时间的实时结果；不得凭空编造新闻。
 只有用户明确要求今天、当前、最新或实时信息时才规划 search_news；历史文化、常识和普通文档任务不要联网。
-涉及 PPT、幻灯片、slides 或 deck 时，优先分配 document 或 coder 节点，并在节点要求中明确使用已安装的 guizang-ppt-skill；用户明确要求 PPTX 时必须生成真实 .pptx 文件。
+涉及 PPT、幻灯片、slides 或 deck 时优先分配 document 节点。用户明确要求 PPTX 时，以已安装的 pptx Skill 为主并生成真实 .pptx 文件；只有用户要求网页 PPT、瑞士风、杂志风或明确指定 guizang 时，才额外使用 guizang-ppt-skill 作为视觉规范，不能用 HTML 冒充 PPTX。
 不要把内部推理写进 JSON。指令必须具体、可验证，不得要求 sudo、宿主机访问或绕过审批。
 示例 JSON：
 {"mode":"single","goal":"生成文本摘要","acceptance_criteria":["摘要覆盖全部输入文件","最终文件非空且可打开"],"nodes":[{"id":"work","role":"reader","title":"整理内容","instructions":"读取输入并生成摘要","depends_on":[],"weight":80},{"id":"review","role":"reviewer","title":"检查结果","instructions":"只读检查摘要是否完整","depends_on":["work"],"weight":20}]}
