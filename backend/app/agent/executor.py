@@ -310,7 +310,7 @@ class AgentExecutor:
             message = {
                 key: value
                 for key, value in result.message.items()
-                if key in {"role", "content", "tool_calls"}
+                if key in {"role", "content", "tool_calls", "reasoning_content"}
             }
             message.setdefault("role", "assistant")
             tool_calls = message.get("tool_calls") or []

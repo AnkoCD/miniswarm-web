@@ -281,7 +281,7 @@ onBeforeUnmount(() => {
         <p class="eyebrow">
           {{ task.task_type }} · {{ task.model_mode === 'auto' ? '自动模型' : task.model_mode }} ·
           {{ ({ auto: '智能', direct: '直接', normal: '常规', critical: '批判', bfs: '广度优先', dfs: '深度优先' } as Record<string, string>)[task.reasoning_mode] || task.reasoning_mode }}推理 ·
-          {{ ({ smart: '智能', fast: '极速', medium: '中', high: '高' } as Record<string, string>)[task.reasoning_effort] || task.reasoning_effort }}强度 ·
+          {{ ({ smart: '智能', fast: '极速', medium: '中', high: '高', ultra: '极高' } as Record<string, string>)[task.reasoning_effort] || task.reasoning_effort }}强度 ·
           {{ task.autonomy_mode === 'yolo' ? 'YOLO 自主执行' : '安全审批' }}
         </p>
         <h1>{{ task.title }}</h1>

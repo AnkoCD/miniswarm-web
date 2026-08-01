@@ -35,11 +35,14 @@ MiniTotGateway
 DeepSeek-compatible API
 ```
 
-- 模式支持 `auto`、`direct`、`normal`、`critical`、`bfs`、`dfs`，强度支持 `smart`、`fast`、`medium`、`high`。
-- `auto` 同时按强度和 Agent 角色选策略：极速强度全部单次调用；智能强度只增强 Planner 与 Reviewer；高强度才扩展 Worker/聊天的关键决策。Worker 后续工具循环始终走直接模式，以控制 Token 和延迟。
+- 模式支持 `auto`、`direct`、`normal`、`critical`、`bfs`、`dfs`，强度支持 `smart`、`fast`、`medium`、`high`、`ultra`，对应界面中的智能、极速、中、高、极高。
+- `auto` 同时按强度、任务文本和 Agent 角色选策略：极速强度全部单次调用；智能强度以确定性规则在极速/中/高之间选择；Planner 使用有界 BFS，Reviewer/Supervisor 使用 Critical，复杂 Worker/聊天使用 DFS。`normal` 发散模式不会被常规自动策略选中。
+- DeepSeek 原生强度映射为：极速关闭思考，中为 `low`，高为 `high`，极高为 `max`；智能使用自动选择后的实际强度。
+- 模型模式与推理强度相互独立：`auto` 按角色混用 Pro/Flash；显式选择 V4 Pro 或 V4 Flash 时，当前任务的全部 Agent 使用所选模型。
 - 探索分支永远不接收工具定义，也不能写文件；它们只使用 MiniTot 内部 JSON 格式，用户调用携带的工具和 `response_format` 只传给最终调用。
 - 分支调用由全局次数、并发数和上下文长度共同限制；用量合并记入原有 `api_usage`。
 - Provider 原生隐藏推理与 MiniTot 分支内容不向浏览器、事件日志或交付文件暴露。
+- 思考模式工具调用返回的 `reasoning_content` 只在当前 Agent 的内存消息链中回传给 DeepSeek，绝不写入数据库、事件或浏览器响应。
 
 ## 服务职责
 

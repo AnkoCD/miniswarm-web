@@ -39,6 +39,7 @@ class Settings(BaseSettings):
     max_reasoning_calls_fast: int = 5
     max_reasoning_calls_medium: int = 10
     max_reasoning_calls_high: int = 18
+    max_reasoning_calls_ultra: int = 24
     minitot_branch_context_chars: int = 6_000
     runner_url: str = "http://runner:8100"
     runner_shared_secret: str = "development-runner-secret-change-me"

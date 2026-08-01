@@ -115,8 +115,90 @@ def test_critical_reasoning_is_bounded_and_only_final_call_gets_tools():
 def test_aliases_are_normalized():
     assert normalize_reasoning_mode("no") == "direct"
     assert normalize_reasoning_mode("divergent") == "normal"
-    assert normalize_reasoning_effort("low") == "fast"
-    assert normalize_reasoning_effort("max") == "high"
+    assert normalize_reasoning_effort("low") == "medium"
+    assert normalize_reasoning_effort("max") == "ultra"
+
+
+def test_fixed_efforts_map_to_deepseek_native_levels():
+    requests = []
+
+    def handler(request: httpx.Request):
+        requests.append(json.loads(request.content))
+        return response("ok")
+
+    gateway = MiniTotGateway(settings(), transport=httpx.MockTransport(handler))
+    for effort in ("fast", "medium", "high", "ultra"):
+        gateway.chat(
+            model="deepseek-v4-flash",
+            messages=[{"role": "user", "content": "hello"}],
+            reasoning_mode="direct",
+            reasoning_effort=effort,
+        )
+
+    assert requests[0]["thinking"] == {"type": "disabled"}
+    assert "reasoning_effort" not in requests[0]
+    assert [item["reasoning_effort"] for item in requests[1:]] == ["low", "high", "max"]
+
+
+def test_smart_preset_is_adaptive_and_never_selects_divergent_mode():
+    gateway = MiniTotGateway(settings())
+    simple = [{"role": "user", "content": "你好"}]
+    complex_task = [{"role": "user", "content": "请排查复杂代码的根因并修改多个文件"}]
+
+    assert gateway._effective_effort("smart", "chat", simple, False) == "fast"
+    assert gateway._effective_effort("smart", "worker", complex_task, False) == "high"
+    assert gateway._resolve_mode("auto", "high", "worker", False) == "dfs"
+    assert gateway._resolve_mode("auto", "medium", "planner", False) == "bfs"
+    assert gateway._resolve_mode("auto", "high", "reviewer", False) == "critical"
+
+
+def test_tool_call_reasoning_is_kept_only_for_in_memory_continuation():
+    def handler(_: httpx.Request):
+        return httpx.Response(
+            200,
+            json={
+                "choices": [{
+                    "message": {
+                        "role": "assistant",
+                        "content": "",
+                        "reasoning_content": "private chain state",
+                        "tool_calls": [{
+                            "id": "call-1",
+                            "function": {"name": "list_files", "arguments": "{}"},
+                        }],
+                    },
+                    "finish_reason": "tool_calls",
+                }],
+            },
+        )
+
+    result = MiniTotGateway(
+        settings(), transport=httpx.MockTransport(handler)
+    ).chat(
+        model="deepseek-v4-flash",
+        messages=[{"role": "user", "content": "inspect"}],
+        reasoning_mode="direct",
+        reasoning_effort="medium",
+        tools=[{"type": "function", "function": {"name": "list_files"}}],
+    )
+    assert result.message["reasoning_content"] == "private chain state"
+    assert result.finish_reason == "tool_calls"
+
+
+def test_usage_reads_deepseek_cache_and_reasoning_fields():
+    usage = MiniTotGateway._usage(
+        {
+            "prompt_tokens": 20,
+            "completion_tokens": 8,
+            "prompt_cache_hit_tokens": 12,
+            "prompt_cache_miss_tokens": 8,
+            "completion_tokens_details": {"reasoning_tokens": 5},
+        },
+        40,
+    )
+    assert usage.cache_hit_tokens == 12
+    assert usage.cache_miss_tokens == 8
+    assert usage.reasoning_tokens == 5
 
 
 def test_auto_fast_stays_single_call():

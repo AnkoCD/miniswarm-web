@@ -51,7 +51,8 @@ import type {
 const COMPOSER_PREFERENCES_KEY = 'miniswarm:composer-preferences'
 
 type ReasoningMode = 'auto' | 'direct' | 'normal' | 'critical' | 'bfs' | 'dfs'
-type ReasoningEffort = 'smart' | 'fast' | 'medium' | 'high'
+type ReasoningEffort = 'smart' | 'fast' | 'medium' | 'high' | 'ultra'
+type ModelMode = 'auto' | 'deepseek-v4-pro' | 'deepseek-v4-flash'
 
 type ComposerPreferences = {
   modelMode?: string
@@ -94,7 +95,7 @@ const selectedSkills = ref<string[]>([])
 const skillMode = ref<'auto' | 'manual' | 'off'>('auto')
 const prompt = ref('')
 const attachments = ref<File[]>([])
-const modelMode = ref('auto')
+const modelMode = ref<ModelMode>('auto')
 const reasoningMode = ref<ReasoningMode>(
   initialComposerPreferences.reasoningMode
     || (initialComposerPreferences.executionMode === 'deep'
@@ -108,7 +109,8 @@ const reasoningEffort = ref<ReasoningEffort>(
       : initialComposerPreferences.executionMode === 'standard' ? 'fast' : 'smart'),
 )
 const reasoningMenuOpen = ref(false)
-const reasoningSubmenuOpen = ref(false)
+const reasoningPanel = ref<'model' | 'effort' | null>(null)
+const reasoningAdvancedOpen = ref(false)
 const webSearchEnabled = ref(initialComposerPreferences.webSearchEnabled === true)
 const autonomyMode = ref('safe')
 const taskType = ref('auto')
@@ -160,28 +162,43 @@ const isWebDesignTask = computed(() => {
 const draftKey = computed(() => `miniswarm:composer-draft:${taskId.value || 'new'}`)
 const attachmentTotalSize = computed(() => attachments.value.reduce((sum, file) => sum + file.size, 0))
 const executionMode = computed<'standard' | 'deep'>(() => (
-  ['medium', 'high'].includes(reasoningEffort.value) ? 'deep' : 'standard'
+  ['medium', 'high', 'ultra'].includes(reasoningEffort.value) ? 'deep' : 'standard'
 ))
 const reasoningActive = computed(() => reasoningMode.value !== 'direct' || reasoningEffort.value !== 'fast')
 const reasoningEffortLabel = computed(() => ({
-  smart: '智能', fast: '极速', medium: '中', high: '高',
+  smart: '智能', fast: '极速', medium: '中', high: '高', ultra: '极高',
 }[reasoningEffort.value]))
+const modelModeLabel = computed(() => ({
+  auto: '自动混用', 'deepseek-v4-pro': 'V4 Pro', 'deepseek-v4-flash': 'V4 Flash',
+}[modelMode.value]))
 const reasoningModeLabel = computed(() => ({
   auto: '智能选择', direct: '直接回答', normal: '发散思考', critical: '批判思考', bfs: '宽度优先', dfs: '深度优先',
 }[reasoningMode.value]))
-const reasoningEfforts: Array<{ value: ReasoningEffort; label: string }> = [
-  { value: 'smart', label: '智能' },
-  { value: 'fast', label: '极速' },
-  { value: 'medium', label: '中' },
-  { value: 'high', label: '高' },
+const reasoningEfforts: Array<{ value: ReasoningEffort; label: string; description: string }> = [
+  { value: 'smart', label: '智能', description: '自动判断任务复杂度，平衡质量、耗时和 Token，推荐日常使用。' },
+  { value: 'fast', label: '极速', description: '适合简单问答、摘要、翻译、格式转换和明确的单步操作。' },
+  { value: 'medium', label: '中', description: '适合普通调研、文档制作、常规代码修改和有限工具调用。' },
+  { value: 'high', label: '高', description: '适合复杂分析、多步骤任务、代码实现、数据处理和重要交付。' },
+  { value: 'ultra', label: '极高', description: '适合高难诊断、复杂规划和关键交付；耗时与 Token 消耗最高。' },
 ]
-const reasoningModes: Array<{ value: ReasoningMode; label: string }> = [
-  { value: 'auto', label: '智能选择' },
-  { value: 'direct', label: '直接回答' },
-  { value: 'normal', label: '发散思考' },
-  { value: 'critical', label: '批判思考' },
-  { value: 'bfs', label: '宽度优先' },
-  { value: 'dfs', label: '深度优先' },
+const reasoningEffortIndex = computed({
+  get: () => Math.max(0, reasoningEfforts.findIndex(item => item.value === reasoningEffort.value)),
+  set: (index: number) => { reasoningEffort.value = reasoningEfforts[index]?.value || 'smart' },
+})
+const reasoningProgress = computed(() => `${reasoningEffortIndex.value * 25}%`)
+const reasoningEffortDescription = computed(() => reasoningEfforts[reasoningEffortIndex.value]?.description || '')
+const modelModes: Array<{ value: ModelMode; label: string; description: string }> = [
+  { value: 'auto', label: '自动混用', description: 'Pro 负责规划、监督和审查，Flash 负责执行与聊天。' },
+  { value: 'deepseek-v4-pro', label: 'DeepSeek V4 Pro', description: '当前任务的全部 Agent 使用 V4 Pro。' },
+  { value: 'deepseek-v4-flash', label: 'DeepSeek V4 Flash', description: '当前任务的全部 Agent 使用 V4 Flash。' },
+]
+const reasoningModes: Array<{ value: ReasoningMode; label: string; description: string }> = [
+  { value: 'auto', label: '智能选择', description: '按任务、强度和 Agent 角色自动选择推理方式。' },
+  { value: 'direct', label: '直接回答', description: '不展开搜索树，适合明确、确定性的任务。' },
+  { value: 'normal', label: '发散思考', description: '多阶段生成和评估多个方向，质量潜力高但耗时很大。' },
+  { value: 'critical', label: '批判思考', description: '从事实、约束、反例、风险和结论角度检查结果。' },
+  { value: 'bfs', label: '宽度优先', description: '先比较多条候选路径，适合调研、规划和多交付物任务。' },
+  { value: 'dfs', label: '深度优先', description: '沿最佳路径深入，适合代码诊断和根因分析。' },
 ]
 
 const WEB_SEARCH_DIRECTIVE = '【联网检索】请使用可用的联网搜索工具核对最新信息，并在结论中保留可追溯来源。'
@@ -214,19 +231,36 @@ function displayMessageContent(content: string) {
 
 function selectReasoningEffort(value: ReasoningEffort) {
   reasoningEffort.value = value
-  reasoningMenuOpen.value = false
-  reasoningSubmenuOpen.value = false
+}
+
+function moveReasoningEffort(delta: number) {
+  reasoningEffortIndex.value = Math.min(4, Math.max(0, reasoningEffortIndex.value + delta))
+}
+
+function setReasoningEffortIndex(index: number) {
+  reasoningEffortIndex.value = Math.min(4, Math.max(0, index))
 }
 
 function selectReasoningMode(value: ReasoningMode) {
   reasoningMode.value = value
-  reasoningMenuOpen.value = false
-  reasoningSubmenuOpen.value = false
+}
+
+function selectModelMode(value: ModelMode) {
+  if (task.value) return
+  modelMode.value = value
+  reasoningPanel.value = null
+}
+
+function toggleReasoningMenu() {
+  reasoningMenuOpen.value = !reasoningMenuOpen.value
+  reasoningPanel.value = null
+  reasoningAdvancedOpen.value = false
 }
 
 function closeReasoningMenu() {
   reasoningMenuOpen.value = false
-  reasoningSubmenuOpen.value = false
+  reasoningPanel.value = null
+  reasoningAdvancedOpen.value = false
 }
 
 function isNearBottom() {
@@ -250,7 +284,9 @@ function scrollToLatest(force = false) {
 function restoreComposerState() {
   try {
     const preferences = readComposerPreferences()
-    modelMode.value = preferences.modelMode || modelMode.value
+    if (!task.value && modelModes.some(item => item.value === preferences.modelMode)) {
+      modelMode.value = preferences.modelMode as ModelMode
+    }
     reasoningMode.value = preferences.reasoningMode
       || (preferences.executionMode === 'deep'
         ? 'auto'
@@ -321,6 +357,7 @@ async function loadTaskData(reconnect = true, scrollToEnd = reconnect) {
     getTaskSupervision(taskId.value),
   ])
   task.value = taskValue
+  modelMode.value = taskValue.model_mode as ModelMode
   selectedProjectId.value = taskValue.project_id || ''
   messages.value = messageValues
   events.value = eventValues
@@ -830,7 +867,7 @@ onBeforeUnmount(() => {
             <small v-if="attachments.length">{{ attachments.length }} 个本地附件 · {{ formatSize(attachmentTotalSize) }}</small>
           </div>
           <div v-if="settingsOpen" class="composer-settings">
-            <label><span>模型</span><select v-model="modelMode"><option value="auto">自动</option><option value="deepseek-v4-pro">V4 Pro</option><option value="deepseek-v4-flash">V4 Flash</option></select></label>
+            <label><span>模型</span><select v-model="modelMode" :disabled="Boolean(task)"><option value="auto">自动混用</option><option value="deepseek-v4-pro">V4 Pro</option><option value="deepseek-v4-flash">V4 Flash</option></select></label>
             <label><span>推理模式</span><select v-model="reasoningMode"><option v-for="option in reasoningModes" :key="option.value" :value="option.value">{{ option.label }}</option></select></label>
             <label><span>推理强度</span><select v-model="reasoningEffort"><option v-for="option in reasoningEfforts" :key="option.value" :value="option.value">{{ option.label }}</option></select></label>
             <label><span>安全</span><select v-model="autonomyMode"><option value="safe">安全审批</option><option value="yolo">YOLO（仅本任务）</option></select></label>
@@ -855,38 +892,75 @@ onBeforeUnmount(() => {
                   type="button"
                   :class="['composer-option-pill', { active: reasoningActive }]"
                   :aria-expanded="reasoningMenuOpen"
-                  :title="`${reasoningEffortLabel}强度 · ${reasoningModeLabel}`"
-                  @click="reasoningMenuOpen = !reasoningMenuOpen; reasoningSubmenuOpen = false"
+                  :title="`${modelModeLabel} · ${reasoningEffortLabel} · ${reasoningModeLabel}`"
+                  @click="toggleReasoningMenu"
                 >
-                  <span>◉</span>{{ reasoningEffortLabel }}<b>⌄</b>
+                  <span>◉</span>{{ modelModeLabel }} · {{ reasoningEffortLabel }}<b>⌄</b>
                 </button>
                 <div v-if="reasoningMenuOpen" class="reasoning-menu" role="menu">
-                  <small>推理强度</small>
-                  <button
-                    v-for="option in reasoningEfforts"
-                    :key="option.value"
-                    type="button"
-                    :class="{ selected: reasoningEffort === option.value }"
-                    @click="selectReasoningEffort(option.value)"
-                  >
-                    <span>{{ option.label }}</span><i>{{ reasoningEffort === option.value ? '✓' : '' }}</i>
-                  </button>
-                  <hr />
-                  <button type="button" class="reasoning-mode-trigger" @click="reasoningSubmenuOpen = !reasoningSubmenuOpen">
-                    <span>{{ reasoningModeLabel }}</span><i>›</i>
-                  </button>
-                  <div v-if="reasoningSubmenuOpen" class="reasoning-submenu" role="menu">
-                    <small>推理模式</small>
+                  <template v-if="reasoningPanel === 'model'">
+                    <div class="reasoning-menu-heading"><button type="button" aria-label="返回" @click="reasoningPanel = null">‹</button><strong>模型</strong></div>
+                    <button
+                      v-for="option in modelModes"
+                      :key="option.value"
+                      type="button"
+                      :class="['reasoning-choice-row', { selected: modelMode === option.value }]"
+                      :disabled="Boolean(task)"
+                      :title="option.description"
+                      @click="selectModelMode(option.value)"
+                    >
+                      <span><strong>{{ option.label }}</strong><small>{{ option.description }}</small></span><i>{{ modelMode === option.value ? '✓' : '' }}</i>
+                    </button>
+                    <p v-if="task" class="reasoning-fixed-note">模型在任务创建时固定；新任务可重新选择。</p>
+                  </template>
+                  <template v-else-if="reasoningPanel === 'effort'">
+                    <div class="reasoning-menu-heading"><button type="button" aria-label="返回" @click="reasoningPanel = null">‹</button><strong>推理强度</strong><span>⚡</span></div>
+                    <div class="reasoning-strength-control" :style="{ '--reasoning-progress': reasoningProgress }">
+                      <input
+                        v-model.number="reasoningEffortIndex"
+                        type="range"
+                        min="0"
+                        max="4"
+                        step="1"
+                        :aria-valuetext="reasoningEffortLabel"
+                        aria-label="推理强度"
+                        @keydown.left.prevent="moveReasoningEffort(-1)"
+                        @keydown.right.prevent="moveReasoningEffort(1)"
+                        @keydown.home.prevent="setReasoningEffortIndex(0)"
+                        @keydown.end.prevent="setReasoningEffortIndex(4)"
+                      />
+                      <div class="reasoning-strength-marks" aria-hidden="true">
+                        <button v-for="(option, index) in reasoningEfforts" :key="option.value" type="button" tabindex="-1" :class="{ selected: index <= reasoningEffortIndex }" :title="`${option.label}：${option.description}`" @click="selectReasoningEffort(option.value)" />
+                      </div>
+                    </div>
+                    <div class="reasoning-strength-labels"><span v-for="option in reasoningEfforts" :key="option.value">{{ option.label }}</span></div>
+                    <p class="reasoning-effort-description">{{ reasoningEffortDescription }}</p>
+                  </template>
+                  <template v-else>
+                    <button type="button" class="reasoning-menu-row" @click="reasoningPanel = 'model'">
+                      <span>模型</span><em>{{ modelModeLabel }}</em><i>›</i>
+                    </button>
+                    <button type="button" class="reasoning-menu-row" @click="reasoningPanel = 'effort'">
+                      <span>推理强度</span><em>{{ reasoningEffortLabel }}</em><i>›</i>
+                    </button>
+                    <hr />
+                    <button type="button" class="reasoning-menu-row reasoning-advanced-trigger" @click="reasoningAdvancedOpen = !reasoningAdvancedOpen">
+                      <span>高级</span><em>{{ reasoningModeLabel }}</em><i>{{ reasoningAdvancedOpen ? '⌃' : '⌄' }}</i>
+                    </button>
+                    <div v-if="reasoningAdvancedOpen" class="reasoning-advanced-options">
                     <button
                       v-for="option in reasoningModes"
                       :key="option.value"
                       type="button"
                       :class="{ selected: reasoningMode === option.value }"
+                      :title="option.description"
                       @click="selectReasoningMode(option.value)"
                     >
-                      <span>{{ option.label }}</span><i>{{ reasoningMode === option.value ? '✓' : '' }}</i>
+                      <span><strong>{{ option.label }}</strong><small>{{ option.description }}</small></span><i>{{ reasoningMode === option.value ? '✓' : '' }}</i>
                     </button>
-                  </div>
+                    </div>
+                    <p v-if="reasoningMode === 'normal'" class="reasoning-warning">发散思考会显著增加耗时与 Token，请谨慎使用。</p>
+                  </template>
                 </div>
               </div>
               <button

@@ -83,6 +83,21 @@ def test_create_task_accepts_minitot_reasoning_profile(authenticated_client):
     assert messages[0]["reasoning_effort"] == "medium"
 
 
+def test_create_task_accepts_ultra_reasoning_effort(authenticated_client):
+    created = authenticated_client.post(
+        "/api/tasks",
+        json={
+            "prompt": "对关键架构进行最高强度审查",
+            "reasoning_mode": "critical",
+            "reasoning_effort": "ultra",
+            "start_immediately": False,
+        },
+    )
+    assert created.status_code == 201
+    assert created.json()["reasoning_effort"] == "ultra"
+    assert created.json()["execution_mode"] == "deep"
+
+
 def test_unknown_skill_and_empty_manual_selection_are_rejected(authenticated_client):
     unknown = authenticated_client.post(
         "/api/tasks",

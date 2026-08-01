@@ -223,6 +223,7 @@ from app.mini_tot.gateway import (  # noqa: E402
     MiniTotError as _MiniTotError,
     MiniTotGateway as _MiniTotGateway,
     ModelUsage as _MiniTotModelUsage,
+    resolve_task_model as _MiniTotResolveTaskModel,
 )
 
 DeepSeekClient = _MiniTotGateway
@@ -230,3 +231,4 @@ DeepSeekError = _MiniTotError
 ModelUsage = _MiniTotModelUsage
 ChatResult = _MiniTotChatResult
 ChatDelta = _MiniTotChatDelta
+resolve_task_model = _MiniTotResolveTaskModel

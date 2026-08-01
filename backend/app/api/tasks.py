@@ -54,7 +54,7 @@ def _reasoning_profile(
 
 
 def _legacy_execution_mode(reasoning_effort: str) -> str:
-    return "deep" if reasoning_effort in {"medium", "high"} else "standard"
+    return "deep" if reasoning_effort in {"medium", "high", "ultra"} else "standard"
 
 router = APIRouter(prefix="/tasks", tags=["tasks"])
 

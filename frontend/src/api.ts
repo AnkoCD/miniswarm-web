@@ -109,7 +109,7 @@ export async function createTask(payload: {
   model_mode: string
   execution_mode: string
   reasoning_mode?: 'auto' | 'direct' | 'normal' | 'critical' | 'bfs' | 'dfs'
-  reasoning_effort?: 'smart' | 'fast' | 'medium' | 'high'
+  reasoning_effort?: 'smart' | 'fast' | 'medium' | 'high' | 'ultra'
   autonomy_mode: string
   skill_mode: 'auto' | 'manual' | 'off'
   selected_skills: string[]
@@ -166,7 +166,7 @@ export async function sendTaskMessage(
   options?: {
     executionMode?: 'standard' | 'deep'
     reasoningMode?: 'auto' | 'direct' | 'normal' | 'critical' | 'bfs' | 'dfs'
-    reasoningEffort?: 'smart' | 'fast' | 'medium' | 'high'
+    reasoningEffort?: 'smart' | 'fast' | 'medium' | 'high' | 'ultra'
     webSearch?: boolean
   },
 ): Promise<TaskMessage> {

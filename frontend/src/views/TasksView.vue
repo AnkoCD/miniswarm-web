@@ -10,9 +10,9 @@ const prompt = ref('')
 const taskType = ref('auto')
 const modelMode = ref('auto')
 const reasoningMode = ref<'auto' | 'direct' | 'normal' | 'critical' | 'bfs' | 'dfs'>('auto')
-const reasoningEffort = ref<'smart' | 'fast' | 'medium' | 'high'>('smart')
+const reasoningEffort = ref<'smart' | 'fast' | 'medium' | 'high' | 'ultra'>('smart')
 const executionMode = computed(() =>
-  reasoningEffort.value === 'medium' || reasoningEffort.value === 'high' ? 'deep' : 'standard',
+  ['medium', 'high', 'ultra'].includes(reasoningEffort.value) ? 'deep' : 'standard',
 )
 const autonomyMode = ref('safe')
 const skillMode = ref<'auto' | 'manual' | 'off'>('auto')
@@ -149,6 +149,7 @@ onMounted(refresh)
             <option value="fast">极速</option>
             <option value="medium">中</option>
             <option value="high">高</option>
+            <option value="ultra">极高</option>
           </select>
         </label>
         <label>

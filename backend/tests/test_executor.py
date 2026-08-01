@@ -103,6 +103,11 @@ def test_executor_runs_tool_then_finishes(tmp_path):
         assert len(runner.calls) == 1
         assert model.calls[0]["reasoning_mode"] == "auto"
         assert model.calls[1]["reasoning_mode"] == "direct"
+        assert any(
+            item.get("reasoning_content") == "private"
+            for item in model.calls[1]["messages"]
+            if item.get("role") == "assistant"
+        )
 
 
 def test_executor_pauses_for_risky_tool(tmp_path):
@@ -255,12 +260,16 @@ def test_executor_uses_task_model_and_thinking_choice(tmp_path):
         assert model.calls[0]["max_tokens"] is None
 
 
-def test_flash_selection_only_applies_to_worker_roles(tmp_path):
+def test_explicit_model_selection_applies_to_all_roles(tmp_path):
     settings = config(tmp_path)
     assert resolve_task_model("deepseek-v4-flash", "document", settings) == "deepseek-v4-flash"
-    assert resolve_task_model("deepseek-v4-flash", "planner", settings) == settings.model_orchestrator
-    assert resolve_task_model("deepseek-v4-flash", "reviewer", settings) == settings.model_reviewer
-    assert resolve_task_model("deepseek-v4-flash", "supervisor", settings) == settings.model_orchestrator
+    assert resolve_task_model("deepseek-v4-flash", "planner", settings) == "deepseek-v4-flash"
+    assert resolve_task_model("deepseek-v4-flash", "reviewer", settings) == "deepseek-v4-flash"
+    assert resolve_task_model("deepseek-v4-flash", "supervisor", settings) == "deepseek-v4-flash"
+    assert resolve_task_model("deepseek-v4-pro", "worker", settings) == "deepseek-v4-pro"
+    assert resolve_task_model("auto", "planner", settings) == settings.model_orchestrator
+    assert resolve_task_model("auto", "reviewer", settings) == settings.model_reviewer
+    assert resolve_task_model("auto", "worker", settings) == settings.model_worker
 
 
 def test_artifact_registration_keeps_unrequested_preview_non_final(tmp_path):

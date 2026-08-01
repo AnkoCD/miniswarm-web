@@ -31,7 +31,7 @@ export interface Task {
   task_type: string
   execution_mode: string
   reasoning_mode: 'auto' | 'direct' | 'normal' | 'critical' | 'bfs' | 'dfs'
-  reasoning_effort: 'smart' | 'fast' | 'medium' | 'high'
+  reasoning_effort: 'smart' | 'fast' | 'medium' | 'high' | 'ultra'
   autonomy_mode: 'safe' | 'yolo'
   model_mode: string
   skill_mode: 'auto' | 'manual' | 'off'

@@ -48,7 +48,7 @@ class TaskCreate(BaseModel):
         default=None, pattern="^(auto|direct|normal|critical|bfs|dfs)$"
     )
     reasoning_effort: str | None = Field(
-        default=None, pattern="^(smart|fast|medium|high)$"
+        default=None, pattern="^(smart|fast|medium|high|ultra)$"
     )
     autonomy_mode: str = Field(default="safe", pattern="^(safe|yolo)$")
     model_mode: str = Field(
@@ -127,7 +127,7 @@ class TaskMessageCreate(BaseModel):
         default=None, pattern="^(auto|direct|normal|critical|bfs|dfs)$"
     )
     reasoning_effort: str | None = Field(
-        default=None, pattern="^(smart|fast|medium|high)$"
+        default=None, pattern="^(smart|fast|medium|high|ultra)$"
     )
     web_search: bool = False
 
