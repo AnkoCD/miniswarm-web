@@ -49,6 +49,10 @@ FORMAT_INTENT = re.compile(
     r"generate|create|export|deliver|output|save\s+as|must|need)",
     re.IGNORECASE,
 )
+FORMAT_POSTFIX_INTENT = re.compile(
+    r"^\s*(?:的)?\s*(?:形式|格式)?\s*(?:交付|输出|导出|提供|保存)",
+    re.IGNORECASE,
+)
 FORMAT_CLAUSE_BOUNDARIES = "，。；;！？!?\n\r"
 REALTIME_RESEARCH = re.compile(
     r"(?:实时|最新|今日|今天|新闻|latest|recent|up-to-date)",
@@ -114,6 +118,7 @@ def requested_formats(prompt: str) -> list[tuple[str, tuple[str, ...]]]:
             clause_end = min(clause_end_candidates, default=len(normalized))
             clause = normalized[clause_start:clause_end]
             prefix = normalized[clause_start:match.start()]
+            suffix = normalized[match.end():clause_end]
             negated = bool(
                 FORMAT_NEGATION.search(prefix)
                 and not FORMAT_NEGATION_OVERRIDE.search(prefix)
@@ -129,6 +134,7 @@ def requested_formats(prompt: str) -> list[tuple[str, tuple[str, ...]]]:
                 and (
                     explicit_extension
                     or FORMAT_INTENT.search(prefix[-32:])
+                    or FORMAT_POSTFIX_INTENT.search(suffix[:24])
                     or short_direct_request
                 )
             ):

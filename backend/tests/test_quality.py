@@ -176,6 +176,12 @@ def test_requested_formats_ignore_explicitly_rejected_alternative():
     ) == {"DOCX": (".docx",)}
 
 
+def test_requested_formats_recognizes_postfix_delivery_wording():
+    assert dict(requested_formats("根据目录出三套试卷，以docx的形式交付")) == {
+        "DOCX": (".docx",)
+    }
+
+
 def test_requested_formats_choose_office_defaults_when_unspecified():
     assert dict(requested_formats("编写一份季度总结报告"))["DOCX"] == (".docx",)
     assert dict(requested_formats("制作一份项目跟踪表"))["XLSX"] == (".xlsx", ".xlsm")
